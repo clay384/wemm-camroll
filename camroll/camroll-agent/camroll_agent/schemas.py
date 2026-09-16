@@ -31,18 +31,26 @@ _COMMON = {
     "date_from": {"type": ["string", "null"], "format": "date", "description": "Inclusive YYYY-MM-DD, or null."},
     "date_to": {"type": ["string", "null"], "format": "date", "description": "Inclusive YYYY-MM-DD, or null."},
 }
+_FILTERS = {
+    "location": {"type": ["string", "null"], "maxLength": 300,
+                 "description": "Trusted administrative location only; city metadata cannot prove a named venue."},
+    "person": {"type": ["string", "null"], "maxLength": 300,
+               "description": "Exact registered name, alias or person_id."},
+    "persons": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 300},
+                "maxItems": 8, "uniqueItems": True,
+                "description": "Require all these named people in the same photo. Unknown matches are excluded."},
+}
 _QUERY = {
     "query": {"type": "string", "minLength": 1, "maxLength": 20000},
     "top_k": {"type": "integer", "minimum": 1, "maximum": 50},
     **_COMMON,
 }
 _SPECS = [
-    ("search", "Semantic WeMM search over photos and their events; use date filters when known.", _QUERY, ["query"]),
+    ("search", "Semantic WeMM search over photos and events; trusted date/place/person filters apply before ranking.", {**_QUERY, **_FILTERS}, ["query"]),
     ("grep", "Chinese keyword search in indexed captions, visible text and events. Zero matches only means indexed text did not match; it cannot establish visual absence.", _QUERY, ["query"]),
     ("list_by_date", "List records by known dates, location or person metadata; unknown dates cannot satisfy date filters.", {
         **_COMMON,
-        "location": {"type": ["string", "null"], "maxLength": 300},
-        "person": {"type": ["string", "null"], "maxLength": 300},
+        **_FILTERS,
         "limit": {"type": "integer", "minimum": 1, "maximum": 100},
         "offset": {"type": "integer", "minimum": 0, "maximum": 1000000},
     }, []),
@@ -53,7 +61,16 @@ _SPECS = [
         "image_ids": {"type": "array", "items": {"type": "string", "pattern": _IMAGE_ID},
                       "minItems": 1, "maxItems": MAX_IMAGES_PER_CALL, "uniqueItems": True},
         "prompt": {"type": "string", "minLength": 1, "maxLength": 4000},
+        "target_person": {"type": ["string", "null"], "maxLength": 300,
+                          "description": "Registered name/alias/person_id for a matched face plus context crop. Fails explicitly if unknown or ambiguous."},
+        "face_id": {"type": ["string", "null"], "pattern": r"^face_[A-Za-z0-9_-]+$",
+                    "description": "Explicit face_id returned by query_photo_people; use one photo when selecting this."},
     }, ["image_ids", "prompt"]),
+    ("query_photo_people", "Read stored named-reference face matches and explicit family relationships for 1–6 photo IDs. Unknown/unprocessed is not proof of absence; scores are similarities, not accuracy.", {
+        "image_ids": {"type": "array", "items": {"type": "string", "pattern": _IMAGE_ID},
+                      "minItems": 1, "maxItems": MAX_IMAGES_PER_CALL, "uniqueItems": True},
+        "person": _FILTERS["person"],
+    }, ["image_ids"]),
 ]
 TOOLS = [{"type": "function", "function": {"name": name, "description": desc,
           "parameters": _parameters(properties, required)}} for name, desc, properties, required in _SPECS]

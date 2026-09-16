@@ -38,3 +38,13 @@ PY
 ```
 
 `camroll/docs/DEPLOYMENT.md` 保留原服务运维细节。其中早期安装脚本和旧 before 快照是历史变更记录，不是此次当前基线恢复的快捷方式；已有 API 扩展不能重新盲装。
+
+## 本轮独立部署与已保留的运行基线
+
+2026-09-16 主任务已在 `.100:/home/realmagic/camroll-wemm/backups/20260916-pre-photobench` 保存 0700 运行快照，包括 CamRoll 相册、资产、一致 SQLite 备份及受限配置，和 WeMM 数据库、索引、配置、API 文件。`baseline.json` 记录 4599 个旧资产、向量及冻结报告文件的哈希，原相册 `CURRENT` 为 `34c35f4d5a9ff16a506eecfc6e6b66d2`。预算快照只作存证，绝不能恢复它覆盖最新累计账本。
+
+新代码采用 `/home/realmagic/camroll-wemm/releases/<gitcommit>`，新 Python 环境为 `.venv-photobench`，数据与报告放在 `runtime/photobench-v2`。原 8765/8770 保持既有部署。新服务固定 8772；部署目录中的 `deployment/manage_eval.py rollback` 只验证并停止其自身进程，保留全部新数据和账本，不修改旧服务。
+
+在当前 release 根使用独立 Python 执行 `deployment/manage_eval.py status` 查看进程身份；`start` 启动、`stop` 停止。已启动其他 release 时必须先显式停止它，再启动新 release。管理器拒绝未登记端口占用者、PID 复用、错误 cwd/命令行和缺少 pidfd 的停止，不发送强制 kill。未经发布校验不得运行 `start`。
+
+CLI 通过 `deployment/with_eval_config.py` 加载原配置及独立 Judge 配置，随后强制隔离相册/评测目录并把预算指向原 `runtime/budget.sqlite`。例如用独立 Python 执行 `deployment/with_eval_config.py camroll_eval import-history <私有历史run目录>`。access key、Judge key 和其他配置都不应出现在命令行参数或日志中。

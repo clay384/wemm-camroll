@@ -46,9 +46,13 @@ dev = ["pytest>=7", "ruff>=0.4"]
 
 [project.scripts]
 camroll-agent = "camroll_agent.cli:main"
+camroll-eval = "camroll_eval.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/thaoshibe/camroll"
 
 [tool.setuptools.packages.find]
-include = ["camroll_agent*"]
+include = ["camroll_agent*", "camroll_eval*"]
+
+[tool.setuptools.package-data]
+camroll_eval = ["static/*", "*.json"]

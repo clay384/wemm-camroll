@@ -281,7 +281,12 @@ def test_streaming_and_sync_are_same_state_machine():
     answer = events[-1][1]
     assert events[-1][0] == "answer"
     assert sync.final_text == answer["response"]
-    assert sync.tool_trace == answer["tool_trace"]
+    # Separate executions have different clocks; protocol and evidence must match.
+    def semantic_trace(items):
+        return [{k: v for k, v in row.items() if k not in
+                 {"started_at_epoch", "finished_at_epoch", "duration_ms"}} for row in items]
+    assert semantic_trace(sync.tool_trace) == semantic_trace(answer["tool_trace"])
+    assert all(row["duration_ms"] >= 0 for row in sync.tool_trace)
     assert sync.stopped_reason == answer["stopped_reason"]
     assert sync.usage == answer["usage"]
     assert "thought" not in [event for event, _ in events]

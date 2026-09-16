@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from camroll_agent.identity import expanded_person_box, resolve_person
+from camroll_agent.metadata import place_matches
 
 CONFIGS = {"M1": ("image", False), "M2": ("image", True),
            "M3": ("dual", False), "M4": ("dual", True)}
@@ -92,8 +94,32 @@ class Library:
         if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
             raise ValueError(f"{name} must be an integer between 1 and {maximum}")
 
-    def _eligible(self, lo, hi):
-        images = {i for i, r in self.images.items() if _date_filter(r, lo, hi)}
+    def _person_ids(self, person=None, persons=None):
+        requested = ([person] if person else []) + list(persons or [])
+        registry = self.metadata.get("people_registry", [])
+        return [(name, resolve_person(name, registry)) for name in requested]
+
+    def _metadata_match(self, row, location=None, person=None, persons=None):
+        if location:
+            if row.get("metadata_version"):
+                trusted = row.get("trusted_location") or ""
+                if not (location.casefold() in trusted.casefold() or place_matches(location, row.get("place") or {})):
+                    return False
+            elif location.casefold() not in row.get("location", "").casefold():
+                return False
+        for name, pid in self._person_ids(person, persons):
+            if row.get("metadata_version"):
+                known = {f.get("person_id") for f in row.get("face_instances", []) if f.get("identity_status") == "matched"}
+                trusted = {p.casefold() for p in row.get("trusted_people", [])}
+                if not ((pid and pid in known) or name.casefold() in trusted):
+                    return False
+            elif not any(name.casefold() in p.casefold() for p in row.get("people", [])):
+                return False
+        return True
+
+    def _eligible(self, lo, hi, location=None, person=None, persons=None):
+        images = {i for i, r in self.images.items() if _date_filter(r, lo, hi)
+                  and self._metadata_match(r, location, person, persons)}
         # Events with an eligible member: date restrictions apply before ranking.
         events = {self.images[i].get("event_id") for i in images}
         return images, {i for i in events if i in self.events}
@@ -148,7 +174,7 @@ class Library:
         return combined
 
     def search(self, query: str, top_k: int = 10, kind: str = "both",
-               date_from=None, date_to=None, *, query_vector=None) -> dict:
+               date_from=None, date_to=None, location=None, person=None, persons=None, *, query_vector=None) -> dict:
         self._positive(top_k, "top_k")
         lo, hi = self._validate(kind, date_from, date_to)
         if not isinstance(query, str) or not query.strip():
@@ -164,7 +190,7 @@ class Library:
         if not np.isfinite(q).all() or np.linalg.norm(q) == 0:
             raise ValueError("Invalid query embedding")
         q = q / np.linalg.norm(q)
-        image_ids, event_ids = self._eligible(lo, hi)
+        image_ids, event_ids = self._eligible(lo, hi, location, person, persons)
         image_rank = self._rank("image", q, image_ids)
         event_rank = []
         if kind in {"both", "events"}:
@@ -186,10 +212,14 @@ class Library:
         selected_events = [item for item in selected if item[0] in self.events]
         result = self._combine(self._decorate(selected_images, self.images),
                                self._decorate(selected_events, self.events), kind)
+        for row in result:
+            if row.get("kind") == "event":
+                row["matched_image_ids"] = [i for i in row.get("image_ids", []) if i in image_ids]
         return {"results": result, "count": len(combined), "query": query,
                 "count_scope": "all_ranked_candidates_before_top_k",
                 "index_version": self.version, "config": self.config,
-                "text_coverage": self.metadata.get("text_coverage", 0)}
+                "text_coverage": self.metadata.get("text_coverage", 0),
+                "filter_coverage": self._filter_coverage(person, persons)}
 
     def grep(self, query: str, kind: str = "both", top_k: int = 10,
              date_from=None, date_to=None) -> dict:
@@ -219,21 +249,71 @@ class Library:
                 "notice": "零结果仅代表索引文字没有匹配，不能证明相册里不存在该内容。"}
 
     def list_by_date(self, date_from=None, date_to=None, kind="both", location=None,
-                     person=None, limit=50, offset=0) -> dict:
+                     person=None, persons=None, limit=50, offset=0) -> dict:
         self._positive(limit, "limit")
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             raise ValueError("offset must be a nonnegative integer")
         lo, hi = self._validate(kind, date_from, date_to)
-        image_ids, event_ids = self._eligible(lo, hi)
-        def match(r):
-            return ((not location or location.casefold() in r.get("location", "").casefold())
-                    and (not person or any(person.casefold() in p.casefold() for p in r.get("people", []))))
+        image_ids, event_ids = self._eligible(lo, hi, location, person, persons)
         def ordered(ids, records):
-            rows = [copy.deepcopy(records[i]) for i in ids if match(records[i])]
+            rows = [copy.deepcopy(records[i]) for i in ids]
+            for row in rows:
+                if row.get("kind") == "event":
+                    row["matched_image_ids"] = [i for i in row.get("image_ids", []) if i in image_ids]
             return sorted(rows, key=lambda r: (r.get("date") or r.get("date_start") or "9999", r["id"]))
         result = self._combine(ordered(image_ids, self.images), ordered(event_ids, self.events), kind)
         return {"results": result[offset:offset + limit], "count": len(result), "offset": offset,
-                "index_version": self.version}
+                "index_version": self.version, "filter_coverage": self._filter_coverage(person, persons)}
+
+    def _filter_coverage(self, person=None, persons=None):
+        return {"identity_processed_images": sum(r.get("identity_status") == "processed" for r in self.images.values()),
+                "album_image_count": len(self.images),
+                "unregistered_person_filters": [name for name, pid in self._person_ids(person, persons) if not pid],
+                "notice": "身份匹配可能漏检或不确定；零匹配不能证明该人物没有出现。地点条件只使用可信元数据，不能证明具体景点。"}
+
+    def query_photo_people(self, image_ids, person=None):
+        self.image_paths(image_ids)  # Enforce snapshot/album boundary before returning data.
+        registry = self.metadata.get("people_registry", [])
+        pid = resolve_person(person, registry) if person else None
+        images = []
+        for iid in image_ids:
+            row = self.images[iid]
+            faces = copy.deepcopy(row.get("face_instances", []))
+            if person:
+                faces = [f for f in faces if pid and f.get("person_id") == pid]
+            images.append({"id": iid, "image_id": iid, "kind": "image",
+                           "identity_status": row.get("identity_status", "not_processed"),
+                           "face_instances": faces,
+                           "unknown_faces": sum(f.get("identity_status") == "unknown" for f in row.get("face_instances", [])),
+                           "all_face_count": len(row.get("face_instances", []))})
+        return {"images": images, "people_registry": copy.deepcopy(registry),
+                "relationships": copy.deepcopy(self.metadata.get("relationships", [])),
+                "requested_person_status": "not_registered" if person and not pid else "registered" if person else None,
+                "index_version": self.version, "identity_version": self.metadata.get("identity_version"),
+                "notice": "matched 表示命名参考照的算法匹配，未人工确认；分数是相似度，不是准确率。unknown 不代表人物不存在。"}
+
+    def target_regions(self, image_ids, target_person=None, face_id=None):
+        self.image_paths(image_ids)
+        registry = self.metadata.get("people_registry", [])
+        pid = resolve_person(target_person, registry) if target_person else None
+        if target_person and not pid:
+            raise ValueError("Target person is not registered; no target crop is available")
+        regions = []
+        for iid in image_ids:
+            found = [f for f in self.images[iid].get("face_instances", [])
+                     if (not pid or f.get("person_id") == pid and f.get("identity_status") == "matched")
+                     and (not face_id or f.get("face_id") == face_id)]
+            if not found:
+                raise ValueError("Target face not located in every requested photo; inspect full images or query_photo_people first")
+            if len(found) != 1:
+                raise ValueError("Target face is ambiguous; select an explicit face_id")
+            face = found[0]
+            regions.append({"image_id": iid, "face_id": face["face_id"], "person_id": face.get("person_id"),
+                            "name": face.get("name"), "face_bbox": face["bbox"],
+                            "crop_bbox": expanded_person_box(face["bbox"], face["image_size"]),
+                            "coordinate_space": face.get("coordinate_space"),
+                            "limitation": "扩展区域可能包含其他人，需结合原图核对；不等于人体分割。"})
+        return regions
 
     def get(self, id: str) -> dict:
         record = self.images.get(id) or self.events.get(id)

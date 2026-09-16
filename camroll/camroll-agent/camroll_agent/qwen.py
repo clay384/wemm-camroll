@@ -49,6 +49,7 @@ class RequestScope:
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.estimated_cny = 0.0
         self.reserved_cny = 0.0
+        self.calls: list[dict] = []
         self._lock = threading.Lock()
 
     def check(self) -> None:
@@ -77,8 +78,24 @@ class RequestScope:
                     "estimated_cny": round(self.estimated_cny, 8),
                     "reserved_cny": round(self.reserved_cny, 8), **self.usage}
 
+    def record_call(self, call: dict) -> None:
+        with self._lock:
+            self.calls.append(call)
+
 
 _scope: contextvars.ContextVar[RequestScope | None] = contextvars.ContextVar("camroll_qwen_scope", default=None)
+
+
+def _trace_payload(value):
+    """Keep full text/tool I/O, but never duplicate private image bytes in traces."""
+    if isinstance(value, dict):
+        return {k: _trace_payload(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_trace_payload(v) for v in value]
+    if isinstance(value, str) and value.startswith("data:image/"):
+        return {"image_payload_sha256": hashlib.sha256(value.encode()).hexdigest(),
+                "encoded_bytes": len(value)}
+    return value
 
 
 def image_messages(prompt: str, image_paths: list[str | Path]) -> list[dict]:
@@ -144,6 +161,8 @@ class QwenClient:
             self.base_url = "https://injected-sdk.invalid/v1"
         self.timeout_s = timeout_s
         self._sleep = sleep
+        self._observer_lock = threading.RLock()
+        self._observers = []
         ledger_path = os.environ.get("CAMROLL_BUDGET_DB", "~/.local/state/camroll/budget.sqlite3")
         self.ledger = ledger or BudgetLedger(ledger_path, min(300.0, float(os.environ.get("CAMROLL_BUDGET_CNY", "300"))))
         if sdk is None:
@@ -174,6 +193,27 @@ class QwenClient:
 
     def usage_summary(self) -> dict:
         return self.ledger.summary()
+
+    @contextlib.contextmanager
+    def capture_calls(self, callback):
+        """Observe this client's build calls across worker threads, without budgets.
+
+        Use one client per build/run. The callback must handle concurrent calls;
+        it receives a detached JSON snapshot with image bytes removed.
+        """
+        with self._observer_lock:
+            self._observers.append(callback)
+        try:
+            yield
+        finally:
+            with self._observer_lock:
+                self._observers.remove(callback)
+
+    def _emit_metric(self, metric):
+        with self._observer_lock:
+            observers = list(self._observers)
+        for callback in observers:
+            callback(json.loads(json.dumps(metric, ensure_ascii=False)))
 
     def capabilities(self) -> dict:
         return {"json_schema": self.ledger.capability(self._capability_key), "model": MODEL}
@@ -243,10 +283,15 @@ class QwenClient:
                 raise
             timeout = self.timeout_s if scope is None else min(self.timeout_s, max(0.001, scope.deadline - time.monotonic()))
             started = time.monotonic()
+            metric = {"call_id": call_id, "call_type": role, "model": MODEL, "attempt": attempt + 1,
+                      "started_at_epoch": time.time(), "streaming": stream, "ttft_ms": None,
+                      "parse_status": None, "input": _trace_payload(body), "status": "running"}
+            if scope:
+                scope.record_call(metric)
             try:
                 response = self.sdk.chat.completions.create(**body, timeout=timeout)
                 if stream:
-                    response = self._collect_stream(response)
+                    response = self._collect_stream(response, started=started)
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
                 name = type(exc).__name__.lower()
@@ -259,10 +304,13 @@ class QwenClient:
                                       ("not support", "unsupported", "not available", "must be one of", "only support")))
                 rejected = status in (400, 401, 403, 404, 422, 429)
                 code = "unsupported_schema" if unsupported_schema else ("http_{}".format(status) if status else "transport_error")
+                metric.update(status="error", error_code=code, duration_ms=(time.monotonic()-started)*1000,
+                              finished_at_epoch=time.time())
                 self.ledger.finish(call_id, 0 if rejected else None,
                                    {"error_code": code, "elapsed_s": time.monotonic() - started}, rejected=rejected)
                 if scope:
                     scope.record({}, 0 if rejected else None, reservation)
+                self._emit_metric(metric)
                 if isinstance(exc, DeadlineExceeded):
                     raise
                 retryable = status == 429 or (isinstance(status, int) and 500 <= status <= 599) or any(
@@ -277,24 +325,41 @@ class QwenClient:
             raw = _as_dict(response)
             usage, cost = _usage_info(raw.get("usage"))
             response_model = raw.get("model", MODEL)
+            duration_ms = (time.monotonic() - started) * 1000
+            ttft_ms = raw.get("_ttft_ms") if stream else None
+            generation_ms = duration_ms - ttft_ms if ttft_ms is not None else None
+            metric.update(status="success", model=response_model, duration_ms=duration_ms,
+                          finished_at_epoch=time.time(), ttft_ms=ttft_ms,
+                          prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
+                          tokens_per_second=(usage.get("completion_tokens", 0)*1000/generation_ms
+                                             if generation_ms and generation_ms > 0 and not usage.get("usage_missing") else None),
+                          estimated_cny=cost, output=_trace_payload(raw.get("choices", [])))
             self.ledger.finish(call_id, cost, {**usage, "response_model": response_model,
                                                "elapsed_s": time.monotonic() - started})
             if scope:
                 scope.record(usage, cost, reservation)
                 if time.monotonic() >= scope.deadline:
+                    metric.update(status="late_response", error_code="deadline_exceeded")
+                    self._emit_metric(metric)
                     raise DeadlineExceeded()
             choices = raw.get("choices", [])
             if not choices:
+                metric.update(status="error", error_code="empty_response")
+                self._emit_metric(metric)
                 raise ProviderError("Qwen returned no assistant choice", code="empty_response")
             choice = _as_dict(choices[0])
             message = _as_dict(choice.get("message"))
             if message.get("refusal"):
+                metric.update(status="error", error_code="refusal")
+                self._emit_metric(metric)
                 raise ProviderError("Qwen declined this request", code="refusal")
             if message.get("role", "assistant") != "assistant":
+                metric.update(status="error", error_code="invalid_message")
+                self._emit_metric(metric)
                 raise ProviderError("Qwen returned an invalid message role", code="invalid_message")
             normalized = {"role": "assistant", "content": message.get("content"),
                           "_usage": {**usage, "estimated_cny": cost, "model": response_model},
-                          "_finish_reason": choice.get("finish_reason")}
+                          "_finish_reason": choice.get("finish_reason"), "_metric": metric}
             if message.get("tool_calls"):
                 calls = []
                 for call in message["tool_calls"]:
@@ -304,14 +369,21 @@ class QwenClient:
                                   "function": {"name": function.get("name"), "arguments": function.get("arguments")}})
                 normalized["tool_calls"] = calls
             if not isinstance(normalized["content"], (str, type(None))):
+                metric.update(status="error", error_code="invalid_message")
+                self._emit_metric(metric)
                 raise ProviderError("Qwen returned unsupported assistant content", code="invalid_message")
             if not normalized.get("tool_calls") and not normalized.get("content"):
+                metric.update(status="error", error_code="empty_response")
+                self._emit_metric(metric)
                 raise ProviderError("Qwen returned empty assistant content", code="empty_response")
+            self._emit_metric(metric)
             return normalized
         raise AssertionError("unreachable")
 
     @staticmethod
-    def _collect_stream(response: Any) -> dict:
+    def _collect_stream(response: Any, started: float | None = None) -> dict:
+        started = time.monotonic() if started is None else started
+        ttft_ms = None
         content: list[str] = []
         calls: dict[int, dict] = {}
         usage = None
@@ -332,6 +404,11 @@ class QwenClient:
                         continue
                     finish_reason = choice.get("finish_reason") or finish_reason
                     delta = _as_dict(choice.get("delta"))
+                    meaningful_call = any(any(_as_dict(_as_dict(c).get("function")).get(k)
+                                              for k in ("name", "arguments"))
+                                          for c in delta.get("tool_calls", []))
+                    if ttft_ms is None and (delta.get("content") or meaningful_call):
+                        ttft_ms = (time.monotonic() - started) * 1000
                     if delta.get("content"):
                         content.append(delta["content"])
                     for raw_call in delta.get("tool_calls", []):
@@ -346,7 +423,7 @@ class QwenClient:
         finally:
             if hasattr(response, "close"):
                 response.close()
-        return {"model": model, "usage": usage,
+        return {"model": model, "usage": usage, "_ttft_ms": ttft_ms,
                 "choices": [{"finish_reason": finish_reason, "message": {
                     "role": "assistant", "content": "".join(content) or None,
                     "tool_calls": [calls[i] for i in sorted(calls)]}}]}
@@ -388,12 +465,15 @@ class QwenClient:
                 else:
                     errors = sorted(validator.iter_errors(parsed), key=lambda error: str(list(error.path)))
                     if not errors:
+                        result.get("_metric", {})["parse_status"] = "valid"
                         return parsed
                     # Validator messages may contain the entire rejected value;
                     # pass only paths and validation keywords back to the model.
                     error_detail = "; ".join("{}: {}".format(".".join(map(str, e.path)) or "$", e.validator) for e in errors[:5])
+                result.get("_metric", {})["parse_status"] = "invalid"
                 messages.append({"role": "assistant", "content": content or "null"})
             except json.JSONDecodeError:
+                result.get("_metric", {})["parse_status"] = "invalid"
                 error_detail = "Response was not valid JSON"
                 messages.append({"role": "assistant", "content": result.get("content") or "null"})
             except ProviderError as exc:

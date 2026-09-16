@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from contextvars import copy_context
+import copy
 from dataclasses import asdict, dataclass, field
 import inspect
 import json
@@ -37,6 +38,11 @@ class AgentResult:
     index_version: str = ""
     config: str = "M1"
     usage: dict = field(default_factory=dict)
+    selected_image_ids: list[str] = field(default_factory=list)
+    retrieved_image_ids: list[str] = field(default_factory=list)
+    turn_outcome: str = "answer"
+    model_call_metrics: list[dict] = field(default_factory=list)
+    conversation_history: list[dict] = field(default_factory=list)
 
     def __str__(self) -> str:
         return self.final_text
@@ -111,12 +117,29 @@ def _assistant_envelope(message: Any) -> dict:
     return clean
 
 
-def _chat(client, messages):
+def _chat(client, messages, stream=False):
     kwargs = {"tools": TOOLS}
     params = inspect.signature(client.chat).parameters
     if "role" in params or any(p.kind == p.VAR_KEYWORD for p in params.values()):
         kwargs["role"] = "agent"
+    if stream and ("stream" in params or any(p.kind == p.VAR_KEYWORD for p in params.values())):
+        kwargs["stream"] = True
     return client.chat(messages, **kwargs)
+
+
+FINAL_SCHEMA = {"type": "object", "additionalProperties": False,
+    "properties": {"answer": {"type": "string", "minLength": 1},
+        "outcome": {"type": "string", "enum": ["answer", "clarify", "refuse"]},
+        "selected_image_ids": {"type": "array", "uniqueItems": True,
+            "items": {"type": "string", "pattern": "^img_[A-Za-z0-9_-]+$"}}},
+    "required": ["answer", "outcome", "selected_image_ids"]}
+
+
+def _known_images(records):
+    ids = {rid for rid in records if rid.startswith("img_")}
+    for record in records.values():
+        ids.update(i for i in record.get("image_ids", []) if isinstance(i, str) and i.startswith("img_"))
+    return ids
 
 
 def _evidence_records(result: Any) -> list[dict]:
@@ -171,18 +194,25 @@ class Agent:
         self.max_steps, self.max_view_image_calls = max_steps, max_view_image_calls
 
     def ask(self, question: str, *, choices: dict[str, str] | None = None,
-            eval_mode: str = "freeform") -> AgentResult:
-        for event, data in self.ask_streaming(question, choices=choices, eval_mode=eval_mode):
+            eval_mode: str = "freeform", history: list[dict] | None = None,
+            request_context: dict | None = None, structured_output: bool = False,
+            stream_model: bool = False) -> AgentResult:
+        for event, data in self.ask_streaming(question, choices=choices, eval_mode=eval_mode,
+                history=history, request_context=request_context, structured_output=structured_output,
+                stream_model=stream_model):
             if event == "answer":
                 return AgentResult(**{key: data[key] for key in AgentResult.__dataclass_fields__})
         raise RuntimeError("Agent state machine did not produce an answer")
 
     def ask_streaming(self, question: str, *, choices: dict[str, str] | None = None,
-                      eval_mode: str = "freeform") -> Iterator[tuple[str, dict]]:
+                      eval_mode: str = "freeform", history: list[dict] | None = None,
+                      request_context: dict | None = None, structured_output: bool = False,
+                      stream_model: bool = False) -> Iterator[tuple[str, dict]]:
         # ASGI servers may resume each next() in a different worker/context.
         # Keep budget/deadline ContextVars inside one owned context throughout.
         context = copy_context()
-        source = self._run_events(question, choices, eval_mode)
+        source = self._run_events(question, choices, eval_mode, history, request_context,
+                                  structured_output, stream_model)
         sentinel = object()
         def events():
             try:
@@ -202,7 +232,8 @@ class Agent:
             kwargs["on_request"] = on_view_request
         return getattr(atom_tools, name)(**kwargs)
 
-    def _run_events(self, question, choices, eval_mode):
+    def _run_events(self, question, choices, eval_mode, history=None, request_context=None,
+                    structured_output=False, stream_model=False):
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question must be a nonempty string")
         if eval_mode not in ("freeform", "multiple_choice"):
@@ -214,12 +245,32 @@ class Agent:
         usage_scope = local_scope
         trace, records, explicit_views, evidence_signatures = [], {}, [], set()
         successful, failed = {}, {}
-        messages = [{"role": "system", "content": SYSTEM_PROMPT + (
-            SYSTEM_PROMPT_FREEFORM_SUFFIX if eval_mode == "freeform" else SYSTEM_PROMPT_MCQ_SUFFIX)},
-            {"role": "user", "content": _format_question(question, choices, eval_mode)}]
+        from .prompts import STRUCTURED_FINAL_SUFFIX
+        system = SYSTEM_PROMPT + (SYSTEM_PROMPT_FREEFORM_SUFFIX if eval_mode == "freeform" else SYSTEM_PROMPT_MCQ_SUFFIX)
+        if structured_output:
+            system += STRUCTURED_FINAL_SUFFIX
+            metadata = getattr(self.library, "metadata", {})
+            registry = {key: public_evidence(metadata.get(key, [])) for key in ("people_registry", "relationships")}
+            system += "\n已登记的人物参考资料（登记不代表每张照片已经识别）：" + json.dumps(registry, ensure_ascii=False)
+        messages = [{"role": "system", "content": system}]
+        for item in copy.deepcopy(history or []):
+            if not isinstance(item, dict) or item.get("role") not in ("user", "assistant", "tool"):
+                raise ValueError("History must contain only prior conversation messages")
+            messages.append(item)
+            if item.get("role") == "tool":
+                try:
+                    payload = json.loads(str(item.get("content", "")).split("] ", 1)[-1])
+                    for rec in _evidence_records(payload.get("data", {})):
+                        rid = rec.get("id") or rec.get("image_id") or rec.get("event_id")
+                        if isinstance(rid, str) and _ID_RE.fullmatch(rid):
+                            records[rid] = rec
+                except (ValueError, TypeError, AttributeError):
+                    pass
+        messages.append({"role": "user", "content": _format_question(question, choices, eval_mode)})
         steps, viewed, invalid_rounds, protocol_errors, no_progress = 0, 0, 0, 0, 0
         stop_reason, answer = "max_steps", ""
         final_refs, scope_summary = [], {}
+        outcome, structured_valid = "answer", False
         final_started = False
         yield "status", {"message": "正在检索相册证据", "index_version": str(self.library.version), "config": self.config}
         try:
@@ -233,7 +284,7 @@ class Agent:
                         "请根据证据决定下一步或直接回答。")})
                     local_scope.requests += 1
                     try:
-                        raw = _chat(self.llm, messages)
+                        raw = _chat(self.llm, messages, stream=stream_model)
                     except Exception as exc:
                         if getattr(exc, "code", None) not in ("empty_response", "invalid_message"):
                             raise
@@ -243,6 +294,8 @@ class Agent:
                     try:
                         msg = _assistant_envelope(raw)
                     except ToolValidationError as exc:
+                        if isinstance(raw, dict) and isinstance(raw.get("_metric"), dict):
+                            raw["_metric"]["parse_status"] = "invalid"
                         protocol_errors += 1
                         observation = {"error": {**exc.detail, "code": "invalid_protocol"}}
                         trace.append({"step": steps, "tool": "protocol", "args": {}, "result": observation})
@@ -253,6 +306,9 @@ class Agent:
                             break
                         continue
                     protocol_errors = 0
+                    metric = raw.get("_metric", {}) if isinstance(raw, dict) else {}
+                    metric["parse_status"] = "valid"
+                    metric["agent_step"] = steps
                     messages.append(msg)
                     calls = msg.get("tool_calls", [])
                     if not calls:
@@ -261,16 +317,47 @@ class Agent:
                             protocol_errors += 1
                             messages.append({"role": "user", "content": "响应为空。请调用原生工具或给出有证据支持的答案。"})
                             continue
+                        if structured_output:
+                            try:
+                                payload = json.loads(answer)
+                                validate_schema(payload, FINAL_SCHEMA, "final_response")
+                                refs = payload["selected_image_ids"]
+                                if payload["outcome"] == "answer" and not records:
+                                    raise ValueError("A factual album answer requires retrieved evidence")
+                                if not set(refs) <= _known_images(records):
+                                    raise ValueError("Final media IDs must come from actual tool evidence")
+                                inline = {x for x in _ID_RE.findall(payload["answer"]) if x.startswith("img_")}
+                                if not inline <= set(refs):
+                                    raise ValueError("Every inline image citation must be explicitly delivered")
+                                if payload["outcome"] in ("clarify", "refuse") and refs:
+                                    raise ValueError("Clarification/refusal must not deliver unrelated photos")
+                                answer, final_refs, outcome = payload["answer"].strip(), refs, payload["outcome"]
+                                structured_valid = True
+                            except (ValueError, TypeError, KeyError) as exc:
+                                metric["parse_status"] = "invalid"
+                                invalid_rounds += 1
+                                answer = ""
+                                if invalid_rounds >= 3:
+                                    stop_reason = "final_response_error"
+                                    break
+                                messages.append({"role": "user", "content": "最终回答结构无效。按规定JSON格式输出，selected_image_ids只能来自已经返回的图片；每个正文图片引用必须在交付列表中。"})
+                                continue
+                            stop_reason = "ok"
+                            break
                         stop_reason = "ok" if records else ("tool_error" if failed else "insufficient_evidence")
                         break
                     round_progress, round_invalid, terminal_reason = False, False, None
                     for call in calls:
+                        tool_started, tool_epoch = time.monotonic(), time.time()
+                        embedding_calls = getattr(getattr(self.library, "embedding", None), "call_records", [])
+                        embedding_offset = len(embedding_calls)
                         name, raw_args = call["function"]["name"], call["function"]["arguments"]
                         args, cached, result = {}, False, None
                         try:
                             parsed = json.loads(raw_args, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite number")))
                             args = validate_arguments(name, parsed)
                         except (ValueError, TypeError) as exc:
+                            metric["parse_status"] = "invalid"
                             detail = exc.detail if isinstance(exc, ToolValidationError) else {
                                 "code": "invalid_json", "field": "function.arguments", "reason": "arguments must contain one valid JSON object"}
                             result, round_invalid = {"error": detail}, True
@@ -316,7 +403,13 @@ class Agent:
                                         result = _error("tool_execution_error", "工具执行失败；此结果不是检索零匹配", exception_type=type(exc).__name__)
                                     failed[key] = result
                         trace.append({"step": steps, "tool": name, "args": public_evidence(args),
-                                      "result": public_evidence(result), "cached": cached})
+                                      "arguments": public_evidence(args), "id": call["id"],
+                                      "model_call_id": metric.get("call_id"),
+                                      "result": public_evidence(result), "cached": cached,
+                                      "started_at_epoch": tool_epoch, "finished_at_epoch": time.time(),
+                                      "duration_ms": (time.monotonic()-tool_started)*1000,
+                                      "embedding_calls": copy.deepcopy(embedding_calls[embedding_offset:]),
+                                      "status": "error" if isinstance(result, dict) and "error" in result else "success"})
                         observation = format_observation(name, args, result)
                         messages.append({"role": "tool", "tool_call_id": call["id"], "name": name, "content": observation})
                         yield "tool_result", {"step": steps, "tool": name, "observation": observation, "cached": cached}
@@ -357,7 +450,7 @@ class Agent:
                     elif no_progress >= 3:
                         stop_reason = "tool_error" if failed else "no_progress"
                         break
-                if self.config in ("M2", "M4") and stop_reason not in (
+                if self.config in ("M2", "M4") and (not structured_output or (structured_valid and outcome == "answer")) and stop_reason not in (
                     "budget_exhausted", "request_limit", "timeout", "provider_error", "protocol_error"):
                     selected = self._select_final_images(records, explicit_views)
                     if selected:
@@ -413,7 +506,7 @@ class Agent:
             answer = _ID_RE.sub(lambda m: "[未验证引用]" if m.group() in unknown else m.group(), answer)
             stop_reason = "invalid_evidence_reference"
             answer += "\n部分引用无法验证，相关结论不能确定。"
-        if not records:
+        if not records and not structured_valid:
             answer = "当前没有取得可用的相册证据，无法确定答案。"
         elif not answer:
             answer = "已取得部分相册证据，但未能完成可靠的总结，暂时无法确定答案。"
@@ -429,10 +522,27 @@ class Agent:
             }
             if stop_reason in limitations:
                 answer += "\n" + limitations[stop_reason]
-        if not final_refs:
+        if not final_refs and not structured_output:
             final_refs = list(dict.fromkeys(i for i in _ID_RE.findall(answer) if i.startswith("img_") and i in known_ids))
         result = AgentResult(answer, trace, steps, viewed, stop_reason, round(time.monotonic()-started, 3),
                              final_refs, str(self.library.version), self.config, scope_summary)
+        result.selected_image_ids = list(final_refs)
+        result.retrieved_image_ids = sorted(_known_images(records))
+        if structured_output:
+            result.evidence_image_ids = list(dict.fromkeys(explicit_views + final_refs))
+        result.turn_outcome = outcome if stop_reason in ("ok", "insufficient_evidence") else "error"
+        result.model_call_metrics = getattr(usage_scope, "calls", [])
+        for entry in result.model_call_metrics + result.tool_trace:
+            entry["context"] = dict(request_context or {})
+        if structured_output or history is not None:
+            final_message = {"role": "assistant", "content": (json.dumps({"answer": answer,
+                "outcome": outcome, "selected_image_ids": final_refs}, ensure_ascii=False)
+                if result.turn_outcome != "error" and structured_output else answer)}
+            if messages[-1].get("role") == "assistant" and not messages[-1].get("tool_calls"):
+                messages[-1] = final_message
+            else:
+                messages.append(final_message)
+            result.conversation_history = copy.deepcopy(messages[1:])
         yield "answer", {"response": answer, **asdict(result)}
 
     def _select_final_images(self, records, explicit_views):

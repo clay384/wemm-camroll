@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import os
+import contextlib
+import copy
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +50,7 @@ class EmbeddingClient:
         self._local = threading.local()
         self._fingerprint = None
         self._lock = threading.Lock()
+        self._observers = []
         self.last_timings = {}
 
     @property
@@ -56,6 +60,22 @@ class EmbeddingClient:
     @last_timings.setter
     def last_timings(self, value):
         self._local.last_timings = value
+
+    @property
+    def call_records(self):
+        if not hasattr(self._local, "call_records"):
+            self._local.call_records = []
+        return self._local.call_records
+
+    @contextlib.contextmanager
+    def capture_calls(self, callback):
+        with self._lock:
+            self._observers.append(callback)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._observers.remove(callback)
 
     def _session(self):
         session = getattr(self._local, "session", None)
@@ -86,6 +106,27 @@ class EmbeddingClient:
             return
 
     def _request(self, path, payload=None):
+        started = time.monotonic()
+        metric = {"call_id": uuid.uuid4().hex, "call_type": "embedding", "operation": path,
+                  "started_at_epoch": time.time(), "status": "running",
+                  "input_type": "image" if payload and "image_path" in payload else "text" if payload else "status"}
+        try:
+            result = self._request_impl(path, payload)
+            metric.update(status="success", backend_timings=result.get("timings", {}),
+                          fingerprint=result.get("fingerprint"))
+            return result
+        except Exception as exc:
+            metric.update(status="error", error_code=getattr(exc, "code", type(exc).__name__))
+            raise
+        finally:
+            metric.update(finished_at_epoch=time.time(), duration_ms=(time.monotonic()-started)*1000)
+            self.call_records.append(metric)
+            with self._lock:
+                observers = list(self._observers)
+            for callback in observers:
+                callback(copy.deepcopy(metric))
+
+    def _request_impl(self, path, payload=None):
         session = self._session()
         for attempt in range(3):
             try:

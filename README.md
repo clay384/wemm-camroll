@@ -1,6 +1,6 @@
-# WeMM + CamRoll 私有源码备份
+# WeMM + CamRoll 与独立 PhotoBench 评测
 
-这是 2026-09-16 从 `.100` 实际部署只读采集的源码基线，不包含模型权重、私人相册、QA、向量、数据库、运行结果或凭据。当前结构为 CamRoll 五工具 Agent、Qwen3.7-Flash 云端生成和既有 WeMM 单 GPU worker。
+仓库保存 2026-09-16 从 `.100` 实际部署采集的完整基线，以及基于该基线开发的六工具 CamRoll 与独立 PhotoBench 评测。生成使用 Qwen3.7-Flash，向量复用既有 WeMM 单 GPU worker。仓库不包含模型权重、私人相册、QA、向量、数据库、逐题运行结果或凭据。
 
 - 基线标签：`baseline/2026-09-16-pre-photobench`。
 - 源码采集时间及每个来源文件的 SHA256：[`baseline/source_manifest.json`](baseline/source_manifest.json)。
@@ -11,13 +11,15 @@
 
 ## 架构
 
-原图与可信日期进入 CamRoll 的可恢复建库流程，Qwen 生成描述和事件，WeMM 编码图片与文本，生成独立相册快照。Agent 通过 `search`、`grep`、`list_by_date`、`get`、`view_image` 读取同一个固定索引版本，返回答案、证据及工具轨迹。WeMM 复用既有 worker，不启动第二份模型。
+原图 EXIF 时间/GPS、离线地名、命名参考照和关系进入独立建库。CPU 人脸模型提供带来源和不确定状态的身份匹配，Qwen 生成描述和事件，WeMM 编码图片与文本，发布独立相册快照。Agent 通过 `search`、`grep`、`list_by_date`、`get`、`view_image`、`query_photo_people` 读取固定索引，支持隔离多轮会话并分别记录候选、证据和最终交付图片。详细契约见 [`docs/PHOTOBENCH_PROTOCOL.md`](docs/PHOTOBENCH_PROTOCOL.md)。
 
-本基线尚未实现拟议的人脸身份工具、完整时间/GPS 扩展、多轮 Benchmark 协议或独立评测页面。后续开发应在基线标签之后单独提交，评测使用新相册和新 run_id。
+`camroll/camroll-agent/camroll_eval/` 提供独立 runner、冻结的 Sentrix 评分兼容层、共享费用账本上的 Judge 调用、历史回放和带登录的比较页面。正式协议为 355 图、8 人、6 条关系、100 题／111 轮，Agent/Judge 并发 12/12。原 `.153:8771` 保持只读；新服务使用 `.100:8772`，旧 `.100:8765/8770` 保留。
 
 ## 重建与恢复
 
-恢复说明见 [`RESTORE.md`](RESTORE.md)。源码基线、运行数据备份和凭据是三个独立部分；Git clone 本身不能恢复相册数据库或预算账本。本次只进行了源码采集与备份，没有执行恢复、停止服务或调用计费模型。
+恢复说明见 [`RESTORE.md`](RESTORE.md)。源码基线、运行数据备份和凭据是三个独立部分；Git clone 本身不能恢复相册数据库。累计费用账本始终沿用，不能恢复旧余额。`deployment/manage_eval.py` 只管理经进程身份核验的独立 8772 服务，`rollback` 停止该服务，原 8770 继续可用。
+
+部署目录固定为 `/home/realmagic/camroll-wemm/releases/<完整提交号>`，使用独立 `.venv-photobench`。受限配置位于 `runtime/photobench-v2`。部署依赖锁见 `deployment/requirements-linux-py310.lock`；`deployment/with_eval_config.py camroll_eval run --run-id <新ID>` 启动正式冷建库评测，完成后的 run 不可改写。
 
 当前真实部署的 WeMM API 已有后续认证/调度保护，本仓库保存的是采集时版本。不要拿历史报告中的 `wemm_app.py.before` 代替这一基线；那是早于 CamRoll 接入的版本。
 

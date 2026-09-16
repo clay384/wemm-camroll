@@ -1,0 +1,157 @@
+{
+  "upstream": "Sentrix-Home-Web/services/photobench/backend/benchmark_orchestrator.py",
+  "observed_date": "2026-09-16",
+  "source_sha256": "6429c7e91159c67334afbce0cf2776b82b6b435f1aeeb780c38715ab6ef71101",
+  "selection": [
+    {
+      "symbol": "_judge_thinking_kwargs",
+      "line": 179
+    },
+    {
+      "symbol": "JUDGE_PROMPT",
+      "line": 404
+    },
+    {
+      "symbol": "TASK_JUDGE_PROMPT",
+      "line": 442
+    },
+    {
+      "symbol": "EVIDENCE_JUDGE_PROMPT",
+      "line": 471
+    },
+    {
+      "symbol": "ANSWER_QUALITY_RUBRICS",
+      "line": 497
+    },
+    {
+      "symbol": "summarize_agent2_trace",
+      "line": 532
+    },
+    {
+      "symbol": "judge_score_consistency",
+      "line": 650
+    },
+    {
+      "symbol": "judge_consistency_status",
+      "line": 667
+    },
+    {
+      "symbol": "judge_score_for_summary",
+      "line": 674
+    },
+    {
+      "symbol": "_infer_media_type",
+      "line": 885
+    },
+    {
+      "symbol": "_media_key",
+      "line": 896
+    },
+    {
+      "symbol": "_normalize_media_refs",
+      "line": 904
+    },
+    {
+      "symbol": "_metric_triplet",
+      "line": 1138
+    },
+    {
+      "symbol": "_modality_metrics",
+      "line": 1155
+    },
+    {
+      "symbol": "_micro_metrics_from_counts",
+      "line": 1170
+    },
+    {
+      "symbol": "_macro_metrics_from_counts",
+      "line": 1192
+    },
+    {
+      "symbol": "_retrieval_metric_eligible",
+      "line": 1210
+    },
+    {
+      "symbol": "_execution_failure",
+      "line": 1338
+    },
+    {
+      "symbol": "nearest_rank_percentile",
+      "line": 1487
+    },
+    {
+      "symbol": "BenchmarkRun._numeric_ms",
+      "line": 3517
+    },
+    {
+      "symbol": "BenchmarkRun._annotate_agent_loop_timings",
+      "line": 3525
+    },
+    {
+      "symbol": "BenchmarkRun._build_timing_breakdown",
+      "line": 3572
+    },
+    {
+      "symbol": "BenchmarkRun._parse_action_payload",
+      "line": 3718
+    },
+    {
+      "symbol": "BenchmarkRun._trace_action",
+      "line": 3750
+    },
+    {
+      "symbol": "BenchmarkRun._derive_attribution",
+      "line": 4012
+    },
+    {
+      "symbol": "BenchmarkRun._agent_stability",
+      "line": 4309
+    },
+    {
+      "symbol": "BenchmarkRun._capability_summary",
+      "line": 4416
+    },
+    {
+      "symbol": "BenchmarkRun._benchmark_e2e_latency_excluding_judge_ms",
+      "line": 4616
+    },
+    {
+      "symbol": "JudgeProtocol._judge",
+      "line": 4048
+    },
+    {
+      "symbol": "JudgeProtocol._judge_task_action",
+      "line": 4127
+    },
+    {
+      "symbol": "JudgeProtocol._parse_judge_json",
+      "line": 4227
+    },
+    {
+      "symbol": "JudgeProtocol._judge_chat_url",
+      "line": 4235
+    },
+    {
+      "symbol": "OrchestratorRepository._percentile",
+      "line": 6310
+    },
+    {
+      "symbol": "OrchestratorRepository._effective_summary",
+      "line": 6363
+    },
+    {
+      "symbol": "OrchestratorRepository._aggregate_tool_performance",
+      "line": 6436
+    },
+    {
+      "symbol": "OrchestratorRepository._aggregate_delivery",
+      "line": 6491
+    }
+  ],
+  "normalization": [
+    "Deduplicate repeated staticmethod decorator; all function bodies retained verbatim."
+  ],
+  "prompt_sha256": "ed72c2e7c2569c027f0ec30514ba996efc5dc735bbbc91684dd83dd6f07f8919",
+  "task_actions_sha256": "afd8f40ec5b86021431b77f5174bb244e584947f3f936e2acee1e03f094f3f00",
+  "terms": "User-provided private Sentrix source; original rights retained. No additional license granted."
+}

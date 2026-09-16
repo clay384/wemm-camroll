@@ -3,8 +3,8 @@
 Three stages:
   1. build_memory   VLM captions each photo + groups them into events.
   2. index          builds a SQLite+FTS5 store and a vector index for fast search.
-  3. agent          a ReAct loop with 5 atomic tools (search, grep,
-                    list_by_date, get, view_image) answers questions about the
+  3. agent          a ReAct loop with 6 atomic tools (search, grep,
+                    list_by_date, get, view_image, query_photo_people) answers questions about the
                     photo library.
 
 Quickstart:
