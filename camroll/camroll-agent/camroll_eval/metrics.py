@@ -171,6 +171,10 @@ def summary(state):
     result["judge_invalid_count"] = sum((r.get("judge") or {}).get("score") not in {0, 1, 2} for r in state.get("items", []))
     result["mapping_error_count"] = sum(r.get("mapping_error_count", 0) for r in state.get("items", []))
     result["executed_turn_count"] = sum(len(r.get("runtime_turns") or []) for r in state.get("items", []))
+    # Keep frozen labeled/valid counts tied to observed judgments, and expose
+    # the full planned denominator separately (111 for the formal protocol).
+    result["task_decision_planned_count"] = state.get("planned_turn_count", result.get("task_decision_labeled_count", 0))
+    result["task_decision_unjudged_count"] = max(0, result["task_decision_planned_count"] - result.get("task_decision_valid_count", 0))
     result["not_started_count"] = max(0, result["planned_count"] - len(state.get("items", [])))
     result["unexecuted_turn_count"] = max(0, state.get("planned_turn_count", result["executed_turn_count"]) - result["executed_turn_count"])
     return result

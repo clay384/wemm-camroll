@@ -1,5 +1,6 @@
 """Safety boundaries for independent process control and configuration."""
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import sys
 
@@ -53,6 +54,33 @@ def test_old_service_port_is_rejected_even_with_matching_pid(tmp_path, monkeypat
     monkeypatch.setattr(manage_eval, '_process', lambda pid: record)
     with pytest.raises(RuntimeError):
         manage_eval._verify(record)
+
+
+def test_stop_waits_on_owned_pidfd_without_exit_time_proc_race(tmp_path, monkeypatch):
+    record = {'pid': 123}
+    path = tmp_path / 'service.json'
+    path.write_text('{}')
+    verifies, signals = [], []
+    monkeypatch.setattr(manage_eval, 'RECORD', path)
+    monkeypatch.setattr(manage_eval, '_lock', nullcontext)
+    monkeypatch.setattr(manage_eval, '_read_record', lambda: record)
+    def verify(r):
+        verifies.append(r)
+        if len(verifies) > 2:
+            raise RuntimeError('process is exiting and argv disappeared')
+        return record
+    monkeypatch.setattr(manage_eval, '_verify', verify)
+    monkeypatch.setattr(manage_eval.os, 'pidfd_open', lambda pid: 999, raising=False)
+    monkeypatch.setattr(manage_eval.signal, 'pidfd_send_signal', lambda fd, sig: signals.append((fd, sig)), raising=False)
+    monkeypatch.setattr(manage_eval.os, 'close', lambda fd: None)
+    class Poll:
+        def register(self, fd, event):
+            assert fd == 999
+        def poll(self, timeout):
+            return [(999, manage_eval.select.POLLIN)]
+    monkeypatch.setattr(manage_eval.select, 'poll', Poll)
+    assert manage_eval.stop()['state'] == 'stopped'
+    assert len(signals) == 1 and not path.exists()
 
 
 def test_budget_cannot_be_redirected_and_albums_are_isolated(tmp_path, monkeypatch):

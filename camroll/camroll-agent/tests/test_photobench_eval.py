@@ -205,6 +205,27 @@ def test_invalid_judge_output_is_not_completed_success():
     assert item['judge']['score'] is None and item['judge_status'] == 'failed'
 
 
+def test_unexecuted_final_turn_never_uses_clarification_quality():
+    judge = Judge(transport=lambda p: None, interval=0)
+    judge._judge = lambda *a, **k: {'score': 2, 'judge_status': 'completed'}
+    judge._judge_task_action = lambda *a, **k: {'expected_action': 'clarify', 'actual_action': 'clarify', 'correct': True}
+    row = {'question': 'which event', 'answer': 'the event', 'conversation': [
+        {'message': 'which event', 'expected_action': 'clarify'},
+        {'message': 'that day', 'expected_action': 'answer'}]}
+    item = initial_item(row)
+    item['runtime_turns'] = [{'message': 'which event', 'answer': 'which day?', 'expected_action': 'clarify', 'agent_status': 'error'}]
+    judge.score_item(item, row)
+    assert item['runtime_turns'][0]['judge']['score'] == 2
+    assert item['task_judges'][0]['correct'] is True
+    assert item['judge']['score'] is None and item['judge_status'] == 'incomplete'
+    assert item['judge']['reason'] == 'final_turn_not_executed'
+    result = summary({'system_id': 'camroll_wemm', 'qa_count': 1, 'planned_turn_count': 2, 'items': [item]})
+    assert result['judge_valid_count'] == 0 and result['judge_invalid_count'] == 1
+    assert result['task_decision_valid_count'] == result['task_decision_labeled_count'] == 1
+    assert result['task_decision_planned_count'] == 2 and result['task_decision_unjudged_count'] == 1
+    assert result['unexecuted_turn_count'] == 1
+
+
 def test_judge_retries_account_each_uncertain_call(tmp_path):
     ledger = BudgetLedger(tmp_path / 'budget.sqlite')
     attempts = []

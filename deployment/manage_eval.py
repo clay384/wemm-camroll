@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
 import socket
 import subprocess
@@ -192,13 +193,16 @@ def stop():
                 signal.pidfd_send_signal(fd, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-        finally:
-            os.close(fd)
-        for _ in range(100):
-            if _verify(record) is None:
+            # During exit /proc can briefly expose empty argv before a zombie
+            # state. The pidfd remains bound to the verified process, so wait
+            # for its exit instead of re-reading a disappearing /proc record.
+            poller = select.poll()
+            poller.register(fd, select.POLLIN)
+            if poller.poll(10000):
                 RECORD.unlink(missing_ok=True)
                 return {'state': 'stopped', 'pid': identity['pid'], 'port': PORT}
-            time.sleep(0.1)
+        finally:
+            os.close(fd)
         raise RuntimeError('Owned process did not exit within 10 seconds; no forced kill was sent')
 
 

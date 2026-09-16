@@ -171,10 +171,15 @@ class Judge(JudgeProtocol):
             record["evidence_judge"] = {"score": None, "reason": "disabled"}
         item["task_judges"] = [record.get("task_judge") or {"expected_action": record.get("expected_action"), "correct": None} for record in records]
         item["task_judge"] = item["task_judges"][-1] if records else {"correct": None}
-        item["judge"] = (records[-1].get("judge") or {"score": None, "reason": "cancelled"}) if records else {"score": None, "reason": "no_turns"}
+        final_turn_executed = len(records) == (len(definitions) or 1)
+        item["final_turn_executed"] = final_turn_executed
+        item["judge"] = ((records[-1].get("judge") or {"score": None, "reason": "cancelled"})
+                         if final_turn_executed else {"score": None, "reason": "final_turn_not_executed", "judge_status": "incomplete"})
         item["judge_status"] = "failed" if any(
             (record.get(key) or {}).get("judge_status") == "failed" for record in records
             for key in ("task_judge", "judge")) else "completed"
         if self._cancel.is_set() and any((record.get("judge") or {}).get("score") not in {0, 1, 2} for record in records):
             item["judge_status"] = "cancelled"
+        elif not final_turn_executed:
+            item["judge_status"] = "incomplete"
         return item
