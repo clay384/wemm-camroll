@@ -7,9 +7,9 @@
 - release：`/home/realmagic/camroll-wemm/releases/<40位gitcommit>`；源码从已测试、已提交的仓库部署。
 - Python：`/home/realmagic/camroll-wemm/.venv-photobench/bin/python`；依赖见根 `requirements-photobench.txt`，使用 `deployment/requirements-linux-py310.lock` 固定本轮实装的传递依赖，与旧 `.venv` 隔离，使用 CPU ONNX Runtime。
 - 私有运行根：`/home/realmagic/camroll-wemm/runtime/photobench-v2`（0700）。其中 `secrets.json`、`judge.key`、`access.key` 均为 0600，不进 Git。
-- 数据：`source/album3-max` 保存 manifest、355 张原图、8 张身份参考照和 `100qa-full`；`_transfer_manifest.json` 与相邻传输收据保存 SHA256 证明。
+- 数据：`source/album3-max` 保存 manifest、355 张原图、8 张身份参考照和 `100qa-full`；相邻 `source/album3-max-transfer-verified.json` 保存传输校验收据，各 run 的 `input_integrity.json` 保存输入 SHA256。
 - 输入清单：运行根 `album3-max.spec.json` 只包含原图路径与 manifest 身份/关系，不包含 QA/GT 或逐图人工标签；正式 run 应使用独立 album_id。
-- 模型目录：运行根 `models/buffalo_l`；外部部署提供固定人脸检测/识别模型文件，代码不自动下载，不进 Git。
+- 模型目录：复用 `/home/realmagic/.insightface/models/buffalo_l` 的检测/识别 ONNX 文件；CPU 加载，记录 SHA256，不自动下载，不进 Git。
 - 新结果与相册分别位于 `evaluation/`、`albums/`；原预算始终为 `/home/realmagic/camroll-wemm/runtime/budget.sqlite`。
 
 ## 发布后启动
@@ -30,6 +30,8 @@ CLI 通过相同配置入口运行，例如：
 ```
 
 ## 停止与回滚
+
+若有评测正在运行，先在页面点击“停止后续提交”，等在途请求结算、run 变为 `cancelled` 后停止服务。不要用停止进程替代正常取消；CLI 运行也必须先取消并等待其退出。
 
 ```bash
 /home/realmagic/camroll-wemm/.venv-photobench/bin/python deployment/manage_eval.py stop
