@@ -1,0 +1,24 @@
+{
+  "checked_at": "2026-09-16T05:30:03.029395+00:00",
+  "files_scanned": 250,
+  "max_file_bytes": 1879389,
+  "total_bytes": 5306800,
+  "credential_pattern_matches": 0,
+  "remote_known_secret_matches_at_collection": 0,
+  "forbidden_file_matches": 0,
+  "source_hash_mismatches": 0,
+  "remote_source_recheck_files": 230,
+  "remote_source_recheck_mismatches": 0,
+  "source_files_in_manifest": 240,
+  "excluded_generated_files": [
+    "camroll/camroll-agent/camroll_agent.egg-info/PKG-INFO",
+    "camroll/camroll-agent/camroll_agent.egg-info/SOURCES.txt",
+    "camroll/camroll-agent/camroll_agent.egg-info/entry_points.txt",
+    "camroll/camroll-agent/camroll_agent.egg-info/requires.txt",
+    "camroll/camroll-agent/camroll_agent.egg-info/top_level.txt",
+    "camroll/camroll-agent/camroll_agent.egg-info/dependency_links.txt"
+  ],
+  "runtime_health": "NOT_RUN",
+  "restore": "NOT_RUN",
+  "model_calls": "NOT_RUN"
+}

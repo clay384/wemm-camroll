@@ -1,0 +1,1701 @@
+{
+  "observed_at": "2026-09-16T05:27:16.405447+00:00",
+  "host": "realmagic@192.168.0.100",
+  "scan": {
+    "known_runtime_secret_match_count": 0,
+    "credential_pattern_match_count": 0
+  },
+  "files": [
+    {
+      "path": "camroll/.gitignore",
+      "origin": "/home/realmagic/camroll-wemm/.gitignore",
+      "sha256": "9cee5c1abe90bcc3aae9d195ee6c2fdabd90b3c617ca29a74ed76b37237a0cf8",
+      "bytes": 110,
+      "executable": false
+    },
+    {
+      "path": "camroll/LICENSE",
+      "origin": "/home/realmagic/camroll-wemm/LICENSE",
+      "sha256": "17b2442405956fe8457ef0e230cbc18ed2cb6444bc86c04b5d61b75df3518335",
+      "bytes": 19151,
+      "executable": false
+    },
+    {
+      "path": "camroll/README.md",
+      "origin": "/home/realmagic/camroll-wemm/README.md",
+      "sha256": "d63ee50247be89ca389efefdb30a68e89c84a68a1f66f632ebca32e240796b06",
+      "bytes": 3633,
+      "executable": false
+    },
+    {
+      "path": "camroll/assets/arxiv-logo.png",
+      "origin": "/home/realmagic/camroll-wemm/assets/arxiv-logo.png",
+      "sha256": "f2f3e0bd928f9dc9dbc243ff948e2248ec4f4602d4349a2f77d7e0c1c4effd32",
+      "bytes": 11171,
+      "executable": false
+    },
+    {
+      "path": "camroll/assets/banner.svg",
+      "origin": "/home/realmagic/camroll-wemm/assets/banner.svg",
+      "sha256": "8f8857d0ea38f60bcec619982825c5757a5197856f833eaadff5330f86f8f81a",
+      "bytes": 156354,
+      "executable": false
+    },
+    {
+      "path": "camroll/assets/camroll-memory.png",
+      "origin": "/home/realmagic/camroll-wemm/assets/camroll-memory.png",
+      "sha256": "aba7698ca3b4e09e773c9b63310d003cc92a10f26fa1cc9a8a288f01dde9ce36",
+      "bytes": 1879389,
+      "executable": false
+    },
+    {
+      "path": "camroll/assets/hf-logo.svg",
+      "origin": "/home/realmagic/camroll-wemm/assets/hf-logo.svg",
+      "sha256": "942cad1ccda905ac5a659dfd2d78b344fccfb84a8a3ac3721e08f488205638a0",
+      "bytes": 35286,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/__init__.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/__init__.py",
+      "sha256": "27e15dd30d92b13837d4a5787478a0607991661d8944c86d6168b44e8c110024",
+      "bytes": 929,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/__main__.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/__main__.py",
+      "sha256": "02f0a4aa6253cc1acbeba3c467f55219e464669f1bd90fd196168ecc853b0c83",
+      "bytes": 64,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/agent.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/agent.py",
+      "sha256": "d602a1aa75095095fe74747159f4a1a8daf644882806c145a47eac51bc14203a",
+      "bytes": 29603,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/budget.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/budget.py",
+      "sha256": "a515a4f833287a364646bde6eb88a9a4750bce2cb1642937a2048c7832947bb2",
+      "bytes": 7538,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/build_memory.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/build_memory.py",
+      "sha256": "a54c9abba2ead168cc9b301b83cea3ab568065ce47288fc2f29c7cc1611876b4",
+      "bytes": 633,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/cli.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/cli.py",
+      "sha256": "c079cabec6471202ea2f32005d503fc89d16480f0ff15fba46d5f3cccd17345d",
+      "bytes": 4221,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/index.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/index.py",
+      "sha256": "dc8c234a31d3cb7e63d4edc0d33c39ca958b98325869d0ba80c7bf5163d56987",
+      "bytes": 469,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/library.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/library.py",
+      "sha256": "cb0917f725e61827b1da86edf5b8fbeff30203a51423da344736346041790674",
+      "bytes": 12941,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/llm/__init__.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/llm/__init__.py",
+      "sha256": "7d913b46f6de199f9074ac84c08e2384178cd64eb2834a2f0a0bb2e8dee137a4",
+      "bytes": 2337,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/llm/base.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/llm/base.py",
+      "sha256": "efd47f107f1d55fd6ea2c08bc86de3e8932864288cef9546181cedaa375fecd2",
+      "bytes": 1280,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/llm/gemini_client.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/llm/gemini_client.py",
+      "sha256": "335456881dffe5670decf1864d8755c734d0daa6d75dd6b117b9d12747201c3b",
+      "bytes": 8033,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/llm/local_client.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/llm/local_client.py",
+      "sha256": "e40ec50642e9986d6dc4b833c5bba357c75829fc219610ebccc4f0074f64df25",
+      "bytes": 7777,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/llm/openai_client.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/llm/openai_client.py",
+      "sha256": "ad35e81adf00b8ff86e1fa1b812a0dc18a410657e9fdbc0fb66cce4157b2ab6e",
+      "bytes": 3863,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/llm/qwen_llm.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/llm/qwen_llm.py",
+      "sha256": "9786cf45b6469d4d23c0c4625f872104850dd5a6f4c0e415353e5e0b1a1c6e5d",
+      "bytes": 11472,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/pipeline.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/pipeline.py",
+      "sha256": "0d2d88ffdf05cf1c5b7f3e5196dff56e5dea8dfab44897332ca2aa0da889139c",
+      "bytes": 37172,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/prompts.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/prompts.py",
+      "sha256": "03666015f4b5c30b2d8f1fadaee7fa11bff477f1af4f87541b03c8b4f3bd56c6",
+      "bytes": 3334,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/qwen.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/qwen.py",
+      "sha256": "94e2e8991f5acf9a37bd0e9c0d344faead6e0178212dc76786ba9c25034c6450",
+      "bytes": 20981,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/schemas.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/schemas.py",
+      "sha256": "731b3ddf44ae32f2e589c6b9be1adbde7973bab89de2c871fc11e823b3c3a705",
+      "bytes": 7044,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/service.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/service.py",
+      "sha256": "309bc0b3acd7a0bee3df9e2c383c42a0588ed423fcffd5a6b23fc05ab8b6dc02",
+      "bytes": 3718,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/store.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/store.py",
+      "sha256": "336baa9421631ae8ebc2a7b3b49306a2f2281c313ba347a0c36c1ee551ffab9a",
+      "bytes": 12847,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/tools.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/tools.py",
+      "sha256": "61d641a4ade639c071aaa3e4a4ee8749136915963aa404d4bb1b3e150135e0c0",
+      "bytes": 5031,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/vector.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/vector.py",
+      "sha256": "90157b063a2922e6a59eb2797946b077cdb64d62a9ce3f3f5a2d31014ff2942c",
+      "bytes": 11325,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/camroll_agent/wemm.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/camroll_agent/wemm.py",
+      "sha256": "eb8cb6932f831d940a65605e5557a7868e1169924bb24216ca4999bccbdd4250",
+      "bytes": 7359,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/examples/quickstart.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/examples/quickstart.py",
+      "sha256": "a0b7864867cd102ff67d3de3f1e5f9630879edfa3c6d76501081d78ddfa3122f",
+      "bytes": 1415,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/examples/sample_conversation.json",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/examples/sample_conversation.json",
+      "sha256": "0535f2aabd057cb3432b92965e99bddbde90fbe3361cbd1b5f1b168dfd2998a7",
+      "bytes": 1347,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/pyproject.toml",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/pyproject.toml",
+      "sha256": "3c22f3b1794e1dc40689fa44e2f5e2c4b341076541fc12ca4d3fea2b60aded4b",
+      "bytes": 1507,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/requirements.txt",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/requirements.txt",
+      "sha256": "0570649b153950cb3d22851e6edb3ddab6c59ba0291343405c551f86fb5eecad",
+      "bytes": 377,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/requirements_local.txt",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/requirements_local.txt",
+      "sha256": "0e3cab8006f54ace44b75e3de17d532c9274c145492dba982dfe34421ceb601a",
+      "bytes": 527,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/tests/test_library.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/tests/test_library.py",
+      "sha256": "a2a5399d57356dff5f8b180b861e04e28ddc2d006c2aa7f80ec3e5e182be1626",
+      "bytes": 7630,
+      "executable": false
+    },
+    {
+      "path": "camroll/camroll-agent/tests/test_pipeline.py",
+      "origin": "/home/realmagic/camroll-wemm/camroll-agent/tests/test_pipeline.py",
+      "sha256": "4a3d79e0afd873f260d388927b8a811fc27f59ea77603faef89cdbc15adfdcba",
+      "bytes": 19005,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/export_receipt.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/export_receipt.py",
+      "sha256": "8eaf24e1e155739eb74ca74de826c430fdd5ee83f905dc14d06bea0f35b91a47",
+      "bytes": 1320,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/install_wemm_api.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/install_wemm_api.py",
+      "sha256": "853013efd2d6ae3be9938a0f70da0f715f03ea1ce59011e69aac78c9615cfd9a",
+      "bytes": 2297,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/manage_camroll.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/manage_camroll.py",
+      "sha256": "82ef63e40e159bb4a11c9c82a3722fc85e962ecf06b6dc4efcad1d8f501fc971",
+      "bytes": 8450,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/prepare_photobench.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/prepare_photobench.py",
+      "sha256": "ba3cd206e1b9f5a9aeebc0ca17ebcc5de140709c25b4a58af15f0f1291b0964b",
+      "bytes": 2030,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/probe_agent.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/probe_agent.py",
+      "sha256": "dccf13f135075359320e150c84220904c53c8c7a438974d15e46dd86c379348f",
+      "bytes": 4278,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/probe_http.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/probe_http.py",
+      "sha256": "88dec09018743fadab42cb90790c3cf62b69c074d05b39858a1c287408640fef",
+      "bytes": 2536,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/probe_internal_live.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/probe_internal_live.py",
+      "sha256": "0c570a212d6c0d92317214ebf01e8375110560cea3a8c5bef814fc5018627bf6",
+      "bytes": 1416,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/probe_qwen.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/probe_qwen.py",
+      "sha256": "cc0d4d42d888d71ab4009a6e62a97339c7d786d5eccab582897847adabdcacbe",
+      "bytes": 2329,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/restart_wemm.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/restart_wemm.py",
+      "sha256": "783dab7daa8454843b73597e8d06fdd398a334883079c8b549424eec4444e24a",
+      "bytes": 2062,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/run_service.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/run_service.py",
+      "sha256": "5b98a68aab4777cf4c4f2916f900d97c4c61ccc920f9d4edc41c8afaf43cfbf1",
+      "bytes": 355,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/snapshot_wemm.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/snapshot_wemm.py",
+      "sha256": "bad5dddec8bc7a33a1aaed12939cdbb6c9c53457e81ac54201cd30e6b94884d6",
+      "bytes": 1770,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/wemm_internal.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/wemm_internal.py",
+      "sha256": "28ab5af7bb3ad20f78e62f10bb810477c2703ade0b4deca0069a57523ed503f8",
+      "bytes": 6805,
+      "executable": false
+    },
+    {
+      "path": "camroll/deployment/with_config.py",
+      "origin": "/home/realmagic/camroll-wemm/deployment/with_config.py",
+      "sha256": "f1990f73e33aa35c1dea73424b974b9393fccb5aef3f3d4976250fad468d5407",
+      "bytes": 453,
+      "executable": false
+    },
+    {
+      "path": "camroll/docs/DEPLOYMENT.md",
+      "origin": "/home/realmagic/camroll-wemm/docs/DEPLOYMENT.md",
+      "sha256": "4fec32c534945e7aed99efdc4c342a1d982fc77ffe274e4e373c62c07c2e8856",
+      "bytes": 14974,
+      "executable": false
+    },
+    {
+      "path": "camroll/docs/IMPLEMENTATION.md",
+      "origin": "/home/realmagic/camroll-wemm/docs/IMPLEMENTATION.md",
+      "sha256": "2884de23d51fb6822716f80890e456ad92e312efeef70cd2797aa49efcd302a0",
+      "bytes": 6315,
+      "executable": false
+    },
+    {
+      "path": "camroll/docs/QWEN_RUNTIME.md",
+      "origin": "/home/realmagic/camroll-wemm/docs/QWEN_RUNTIME.md",
+      "sha256": "1a78c06eb6c71c6325df08d3ad2e4cb69f7bce051e6861d9cbcab9b52ddd5b33",
+      "bytes": 6331,
+      "executable": false
+    },
+    {
+      "path": "camroll/docs/UPSTREAM_README.md",
+      "origin": "/home/realmagic/camroll-wemm/docs/UPSTREAM_README.md",
+      "sha256": "74bb38b517a0a20d6b17c7d1b3749cccbd705f3660c53bf1fadd30248a3f91f4",
+      "bytes": 14223,
+      "executable": false
+    },
+    {
+      "path": "camroll/docs/VALIDATION_20260915.md",
+      "origin": "/home/realmagic/camroll-wemm/docs/VALIDATION_20260915.md",
+      "sha256": "ad6bbb8e9b68388a5c025fd58aeddd765aae8fd118c33294ddf73e569a7265ff",
+      "bytes": 7631,
+      "executable": false
+    },
+    {
+      "path": "camroll/requirements-wemm.txt",
+      "origin": "/home/realmagic/camroll-wemm/requirements-wemm.txt",
+      "sha256": "5d961542df403c09d809902191d88dcef8b8e5ae95bf7faade1ff6ba37d402d3",
+      "bytes": 182,
+      "executable": false
+    },
+    {
+      "path": "camroll/requirements.txt",
+      "origin": "/home/realmagic/camroll-wemm/requirements.txt",
+      "sha256": "006c4bc560f5e4ccaa8419c8a7957f43f2755ea8f6c3c4b6c1601300894fa85d",
+      "bytes": 407,
+      "executable": false
+    },
+    {
+      "path": "camroll/requirements_local.txt",
+      "origin": "/home/realmagic/camroll-wemm/requirements_local.txt",
+      "sha256": "a4dd1e60d3db4aa480ac8f344d75a1277c081be757da2d36ee6e4470b7ced69f",
+      "bytes": 557,
+      "executable": false
+    },
+    {
+      "path": "camroll/scripts/evaluate_retrieval.py",
+      "origin": "/home/realmagic/camroll-wemm/scripts/evaluate_retrieval.py",
+      "sha256": "0f7ee1f639e24bb5a6390ea823b0e7fb35569fd301db21dd9843854a5d720389",
+      "bytes": 26579,
+      "executable": false
+    },
+    {
+      "path": "camroll/tests/test_agent.py",
+      "origin": "/home/realmagic/camroll-wemm/tests/test_agent.py",
+      "sha256": "cac1258a1f6b590c8c733fb3704a3534fbefde657a56f7df0a0d26156544ae4d",
+      "bytes": 19556,
+      "executable": false
+    },
+    {
+      "path": "camroll/tests/test_budget.py",
+      "origin": "/home/realmagic/camroll-wemm/tests/test_budget.py",
+      "sha256": "5c59346580a345f6158afd76861c78feb2edb5336ee4be917f127db2cd76c883",
+      "bytes": 3244,
+      "executable": false
+    },
+    {
+      "path": "camroll/tests/test_deployment.py",
+      "origin": "/home/realmagic/camroll-wemm/tests/test_deployment.py",
+      "sha256": "a87dbb8ad0241153fa0ec2f3b7a245c2a6eadc0fc2e9aa0dd94c640437c0498f",
+      "bytes": 5298,
+      "executable": false
+    },
+    {
+      "path": "camroll/tests/test_evaluation.py",
+      "origin": "/home/realmagic/camroll-wemm/tests/test_evaluation.py",
+      "sha256": "4a9737d1144cb5f340c66f6eb3d236bd2b8ba2ad85e83a8bd23637dcb26f49ec",
+      "bytes": 5667,
+      "executable": false
+    },
+    {
+      "path": "camroll/tests/test_qwen.py",
+      "origin": "/home/realmagic/camroll-wemm/tests/test_qwen.py",
+      "sha256": "7b7649688b36749ba9c1de2c1de1f1597195bd0cb7493a64071f540085097db5",
+      "bytes": 8167,
+      "executable": false
+    },
+    {
+      "path": "camroll/tests/test_service.py",
+      "origin": "/home/realmagic/camroll-wemm/tests/test_service.py",
+      "sha256": "0ca50b1868590c01c9e4b5acbdd17e3020d1d3c7bf6cf76f5c6caac80d244ef3",
+      "bytes": 11593,
+      "executable": false
+    },
+    {
+      "path": "camroll/tests/test_wemm_api.py",
+      "origin": "/home/realmagic/camroll-wemm/tests/test_wemm_api.py",
+      "sha256": "f8aecb1151cf3f1737c569457db0caced1e698b689bea81274d92e6412f54085",
+      "bytes": 8637,
+      "executable": false
+    },
+    {
+      "path": "wemm/.env.example",
+      "origin": "/home/realmagic/wemm-embedding-lab/.env.example",
+      "sha256": "660f4264c689defe387326ad0d8d10ce76a5bae611852a12ef2788f8e28d04bd",
+      "bytes": 284,
+      "executable": false
+    },
+    {
+      "path": "wemm/.gitignore",
+      "origin": "/home/realmagic/wemm-embedding-lab/.gitignore",
+      "sha256": "e8afb9eeb24ce0d00b8535918c074312ac27fabfa30c290081eecde40daddaa7",
+      "bytes": 78,
+      "executable": false
+    },
+    {
+      "path": "wemm/AGENTS.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/AGENTS.md",
+      "sha256": "65a9e697ce952470c294d282bbb59bea9e7b3471f75a91220bb39c9127eac246",
+      "bytes": 530,
+      "executable": false
+    },
+    {
+      "path": "wemm/CURRENT_STATE.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/CURRENT_STATE.md",
+      "sha256": "6dc31294be1098a8f854986c5ca123450cf7e5e3ac0b120da476523c6148322d",
+      "bytes": 2009,
+      "executable": false
+    },
+    {
+      "path": "wemm/README.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/README.md",
+      "sha256": "db720e3fa9e29620c29584a2a9f17d3c9ddf2bb4c9fe1e02f302486004226779",
+      "bytes": 6128,
+      "executable": false
+    },
+    {
+      "path": "wemm/SOURCE_LOCK.json",
+      "origin": "/home/realmagic/wemm-embedding-lab/SOURCE_LOCK.json",
+      "sha256": "15c67a0ad2adae44af648f3a65cf7fcb1f30a4fce8af9a45d389467668de7645",
+      "bytes": 5404,
+      "executable": false
+    },
+    {
+      "path": "wemm/WORKLOG.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/WORKLOG.md",
+      "sha256": "24f587f298be99d4b70f8efe1cadc46f7e1b85a5221f64d3b2a28d334684ae7a",
+      "bytes": 6673,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/app.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/app.py",
+      "sha256": "b0635d098599d479951fbae83cf84d271c663423b16c2726d462091718dfc309",
+      "bytes": 13686,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/benchmark.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/benchmark.py",
+      "sha256": "6f3545bc9da5b65d6ba10b2d8772bd4acef014f59000bc1b284a6ddc50bb95fb",
+      "bytes": 10138,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/camroll_internal.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/camroll_internal.py",
+      "sha256": "28ab5af7bb3ad20f78e62f10bb810477c2703ade0b4deca0069a57523ed503f8",
+      "bytes": 6805,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/common.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/common.py",
+      "sha256": "ddb6d39cb7189c15e4d9f5fadd1848cd6fc596f87227ab7554275964d54ef277",
+      "bytes": 2155,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/encoder.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/encoder.py",
+      "sha256": "6eee686efcfc142b6cc28b4a727ce40112a890ef3189d3aa7246ab31601865a6",
+      "bytes": 6541,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/preprocess.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/preprocess.py",
+      "sha256": "279a2fedb4d211c0caa9f25da634b9843092d1ea60ab2daad80cd4dedd23cd3d",
+      "bytes": 6195,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/retrieval.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/retrieval.py",
+      "sha256": "ef9042f07699cf640a6eaaeafcf890f5649d3f3c40ceca8950a086d2af1c420f",
+      "bytes": 1733,
+      "executable": false
+    },
+    {
+      "path": "wemm/backend/worker.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/backend/worker.py",
+      "sha256": "6e3afbb069bb3be959f140982d8510418e8c1570e63b725d9f792bce378fcb88",
+      "bytes": 6450,
+      "executable": false
+    },
+    {
+      "path": "wemm/config.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/config.yaml",
+      "sha256": "53f77318b715bf981dcf87e71f3d590fa78b263115f6076aaf5f38213cd0c58d",
+      "bytes": 756,
+      "executable": false
+    },
+    {
+      "path": "wemm/frontend/dist/app.js",
+      "origin": "/home/realmagic/wemm-embedding-lab/frontend/dist/app.js",
+      "sha256": "281ffb7369a3a20b153085c6623adf97532757c13b921b089564ef0af4a683b6",
+      "bytes": 13349,
+      "executable": false
+    },
+    {
+      "path": "wemm/frontend/dist/index.html",
+      "origin": "/home/realmagic/wemm-embedding-lab/frontend/dist/index.html",
+      "sha256": "4af4f1ceff15062189060871605f37991da14b19cf50ccc5f40cfc3adb69d3a0",
+      "bytes": 7340,
+      "executable": false
+    },
+    {
+      "path": "wemm/frontend/dist/style.css",
+      "origin": "/home/realmagic/wemm-embedding-lab/frontend/dist/style.css",
+      "sha256": "e917d0c6d0d0497cc599cc7e339442441e8c83098d7ce89791084877089fb7c4",
+      "bytes": 6668,
+      "executable": false
+    },
+    {
+      "path": "wemm/frontend/src/app.js",
+      "origin": "/home/realmagic/wemm-embedding-lab/frontend/src/app.js",
+      "sha256": "281ffb7369a3a20b153085c6623adf97532757c13b921b089564ef0af4a683b6",
+      "bytes": 13349,
+      "executable": false
+    },
+    {
+      "path": "wemm/frontend/src/index.html",
+      "origin": "/home/realmagic/wemm-embedding-lab/frontend/src/index.html",
+      "sha256": "4af4f1ceff15062189060871605f37991da14b19cf50ccc5f40cfc3adb69d3a0",
+      "bytes": 7340,
+      "executable": false
+    },
+    {
+      "path": "wemm/frontend/src/style.css",
+      "origin": "/home/realmagic/wemm-embedding-lab/frontend/src/style.css",
+      "sha256": "e917d0c6d0d0497cc599cc7e339442441e8c83098d7ce89791084877089fb7c4",
+      "bytes": 6668,
+      "executable": false
+    },
+    {
+      "path": "wemm/hf_metadata.json",
+      "origin": "/home/realmagic/wemm-embedding-lab/hf_metadata.json",
+      "sha256": "ee63964de730b43772dce2c3ecd625328931a520bdde17c91ef43a49e938d36e",
+      "bytes": 1933,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/.gitignore",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/.gitignore",
+      "sha256": "669d0e0d1efcbd3020d446117a8d6bdfd3f47da1d93d0f0b776cae30e8d5e7ac",
+      "bytes": 640,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/LICENSE",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/LICENSE",
+      "sha256": "b344604c83448e53a49db97363000c3bb8968abf61362efaf92508e3ee62af3e",
+      "bytes": 11680,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/README.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/README.md",
+      "sha256": "1418f5607e4709700ff14ea30ec3490585c8accd3a2ca5ffec81b4cdc490ebd2",
+      "bytes": 7536,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/README_zh.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/README_zh.md",
+      "sha256": "457f8e9e2cd6269a5f47ee4fb101bd93e708a3f29e0d93a34dfb311cc31e30c2",
+      "bytes": 7245,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/assets/WeMM_Embedding_tech_report.pdf",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/assets/WeMM_Embedding_tech_report.pdf",
+      "sha256": "64fc4529774699da51ca33a9c863c37bc252617dfbb4580ca4ed11adafcf22d0",
+      "bytes": 1074998,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/assets/performance-overview.png",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/assets/performance-overview.png",
+      "sha256": "e50805f9be9d16c262d27370c544e71552a9751890ab0f16f7755fcca2ad3fad",
+      "bytes": 442624,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/examples/sentence_transformers_inference.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/examples/sentence_transformers_inference.py",
+      "sha256": "4b58cfdbfc3e46beef79361e2c0f67612cbf70c2b710d5eb022aa5a5a497026b",
+      "bytes": 1754,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/examples/transformers_inference.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/examples/transformers_inference.py",
+      "sha256": "4292474c468b1ac941d276846317ab9e88b49907284bd8aa85bde41c576dc62c",
+      "bytes": 3598,
+      "executable": true
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/README.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/README.md",
+      "sha256": "9d2cdc46702a7d9855ad2cb0e23915160831aff3d53a3aa8a252353bece8118d",
+      "bytes": 5290,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/eval.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/eval.py",
+      "sha256": "912f01e4ede506cb94358fbd32ca83bd342d979a5bc99fccd1b187b25b616a75",
+      "bytes": 43147,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/data/dataset_setup_v3.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/data/dataset_setup_v3.py",
+      "sha256": "6b61424bffd4a0b14b279f1196c78f92e93309488ffbe773f584e5b092c77d0e",
+      "bytes": 18558,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/data/download_data.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/data/download_data.sh",
+      "sha256": "0a7e8a939f34a25a3ebcc48e64b943912e2237cb83ca06e197552c191f9330b4",
+      "bytes": 1809,
+      "executable": true
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/eval/gui.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/eval/gui.yaml",
+      "sha256": "b94ab668beb897546c2b0e449b6343f09ff5cb8fda1d96a9ecfebc36447d5706",
+      "bytes": 1247,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/eval/image.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/eval/image.yaml",
+      "sha256": "1f724fa3d7d236a7ccb8ba8b8a67e8c69697a0fc7953b6f45dd4b4114b0eedf0",
+      "bytes": 5669,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/eval/memory.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/eval/memory.yaml",
+      "sha256": "6c6bf2c7192bf9215dabe593cbd301b60c8ebd03284ce02998857cc6875aaa42",
+      "bytes": 820,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/eval/text.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/eval/text.yaml",
+      "sha256": "0f8963a97be3e267f3d0e7559be3ce07d1e1cc466f1745c30d4aef8d281f0d26",
+      "bytes": 18623,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/eval/tool.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/eval/tool.yaml",
+      "sha256": "650cadac455e62f405d04ceecc1abc830538287c3374fc083cc34161035df47a",
+      "bytes": 10533,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/eval/video.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/eval/video.yaml",
+      "sha256": "1587a5b72a653d96ee35c8b5465598b0e23a9371a65521c08ef3dbab67d812b5",
+      "bytes": 5298,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/experiments/public/eval/visdoc.yaml",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/experiments/public/eval/visdoc.yaml",
+      "sha256": "59791da4019c70cfd3b5a2dc6c5c75d8368909dd7f90122111dcce433dd1ec7e",
+      "bytes": 4681,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/requirements.txt",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/requirements.txt",
+      "sha256": "cb4ca8f5e6805e91790cff51b83f47124f69299d2bb9bf21351d91d8c91b842d",
+      "bytes": 466,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/scripts/download_data.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/scripts/download_data.sh",
+      "sha256": "902fdedcdbea3404f85b9f78840c189ee8b933a5fd52edcffbfe07b9eb526297",
+      "bytes": 4685,
+      "executable": true
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/scripts/run_eval.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/scripts/run_eval.sh",
+      "sha256": "a572f5d866f0c02c233ce0e34f7b20f02385887cbed262a50a3f921fe3363582",
+      "bytes": 2551,
+      "executable": true
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/scripts/run_multinode.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/scripts/run_multinode.sh",
+      "sha256": "e7f1eabc3301e4ff7e4ae82d1ee7d2264d66bb3c358a8dca8cd693669e9831de",
+      "bytes": 3561,
+      "executable": true
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/arguments.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/arguments.py",
+      "sha256": "a2278bd799aff6d7426b59a2e96165bfe033b69443182ffe43a5da93bfed4470",
+      "bytes": 14119,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/constant/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/constant/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/constant/dataset_hf_path.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/constant/dataset_hf_path.py",
+      "sha256": "12ffc750983804b13583abb711a3449c17775fecb74cb7148fea527a73096f7e",
+      "bytes": 7309,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/constant/dataset_hflocal_path.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/constant/dataset_hflocal_path.py",
+      "sha256": "1ab8176a070ab66a88935f079a9d27b1dbe05b21114ecb3542ddfd28e2ea622b",
+      "bytes": 12368,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/__init__.py",
+      "sha256": "52a138bf23ce99ad920a44eac3c1b4c7c39a7cadef74d68ba9385b846b1330b5",
+      "bytes": 55,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/collator/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/collator/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/collator/eval_collator.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/collator/eval_collator.py",
+      "sha256": "9ef12309b7fbf608cc5aab4d1a5cee58ca009086b6fddee79e40cfb091dd0a5d",
+      "bytes": 23339,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/collator/eval_collator_omni.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/collator/eval_collator_omni.py",
+      "sha256": "b5d38c14683237deee0fffd85fd640b0e65f2bff5675a7f444fce0f4a5cf3897",
+      "bytes": 20443,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/collator/mscoco_cmret.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/collator/mscoco_cmret.py",
+      "sha256": "5d7ba4d3071f2062c2b1d667d9ce80b9904ac1d3fcc2a0e7e2da1902db0710b6",
+      "bytes": 20744,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/collator/train_collator_omni.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/collator/train_collator_omni.py",
+      "sha256": "51cba36a7688951b207ca42e7c1b99c1cd47b526ed3bf423fedf90465baa08e8",
+      "bytes": 31292,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/dataset/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/dataset/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/dataset/mcmr_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/dataset/mcmr_dataset.py",
+      "sha256": "88f9e076d82fc32c23883916f147301b379e0254d6a87291f142cea7e49c3fc9",
+      "bytes": 6232,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/__init__.py",
+      "sha256": "57a0a2db74fb8875c0b105f42defb3699ec3d76dcce1fe491b0dd0cdd8b157e7",
+      "bytes": 2623,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/activitynetqa_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/activitynetqa_dataset.py",
+      "sha256": "cead608edc89d82290c6e464b476b19c623e81acc887a302ccc5f8618bc0fd60",
+      "bytes": 6812,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/audio_cls_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/audio_cls_dataset.py",
+      "sha256": "a9f19e39877ac134b2d61d75be486b15ffb6911fdce12f98c0746d59911c0b9f",
+      "bytes": 20111,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/audio_instruction_utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/audio_instruction_utils.py",
+      "sha256": "e0f426266a9bac7cf8e779970bf04c682a0764163b853d2ae6779907e3a2c1e2",
+      "bytes": 1715,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/ave_retreival_dateset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/ave_retreival_dateset.py",
+      "sha256": "d7915bd7ada876f0181947c00101270f569e7674da6569ea53a5f435e2a69be2",
+      "bytes": 11041,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/base_eval_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/base_eval_dataset.py",
+      "sha256": "7ed6f91211d8082ccf8964404dc40043145945b7ff2d1fd28bee90e01d01800e",
+      "bytes": 7445,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/clotho_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/clotho_dataset.py",
+      "sha256": "06eb12750b4df07d6cef4ba973b7724c3333d397656d956ac5a91a193031e87a",
+      "bytes": 5354,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/complex_text_retrieve.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/complex_text_retrieve.py",
+      "sha256": "8b340ff760c4b4990ebeb948ddadabc38670cb90e12cc47eb749f127f5e91590",
+      "bytes": 18667,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/didemo_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/didemo_dataset.py",
+      "sha256": "6cfa837f30027303c9063a5e515d2c090f838e095ce3e8b44c735f06f345611e",
+      "bytes": 3682,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/egoschema_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/egoschema_dataset.py",
+      "sha256": "946b3f310a7428d6fb8d887349de9a1927655586e0c06b06583d0b5a4fb06e0b",
+      "bytes": 5212,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/gui_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/gui_dataset.py",
+      "sha256": "7db0daef48427baeee5bd905c25d5e7663b3889e0f472ce2937a1212cefe84a0",
+      "bytes": 7568,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_cls_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_cls_dataset.py",
+      "sha256": "92212ce60bdbe7da634cdb3c6c96d9589f164beeaae4fe8c8ac8966eb79d51c3",
+      "bytes": 4290,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_i2i_vg_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_i2i_vg_dataset.py",
+      "sha256": "de4a8bde94b7c8ff8e844445e395b07dcf43da4bee176a6324983b07a115e967",
+      "bytes": 5510,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_i2t_eval.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_i2t_eval.py",
+      "sha256": "3395fa9d3eef1ca572b2f63a34bf35ee17d2ed859bb0d3a73777fc97e451e3fb",
+      "bytes": 3749,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_qa_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_qa_dataset.py",
+      "sha256": "97b0c858d6cf014a068534c26881351e624c57ba1f5aeedba3779dbb8129079a",
+      "bytes": 3768,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_t2i_eval.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/image_t2i_eval.py",
+      "sha256": "24c02aeb171be78543b853aea89bbc108f2ed462f15ca9a9a54096c0509eb14c",
+      "bytes": 5004,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/mcmr_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/mcmr_dataset.py",
+      "sha256": "91e1f89600f15481fc4098a774f79185e919f323784b2c16f48995fd0cb40285",
+      "bytes": 6107,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/memory_retrieval_dateset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/memory_retrieval_dateset.py",
+      "sha256": "2a287d385c1374cf3ce1a06c90c8c756a67fe51d0ba1bee5ebda390e8ce9c99f",
+      "bytes": 17082,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/moment_retrieval_datasets.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/moment_retrieval_datasets.py",
+      "sha256": "61f1a0122cc4672c3cc02969a256ea22a8cd471f5283de701d2606d16ac8956e",
+      "bytes": 6573,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/momentseeker_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/momentseeker_dataset.py",
+      "sha256": "00b44ede3ae9e3e58e5ba30744dbcd35963623826b846cfa7757e204f9e482dc",
+      "bytes": 7530,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/msrvtt_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/msrvtt_dataset.py",
+      "sha256": "fc64cf349bd3c98cc7c899d3630b1c5d8c45ccb93c87992fff063d3432c4ce31",
+      "bytes": 3642,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/msvd_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/msvd_dataset.py",
+      "sha256": "04561e6b0b3a49b75fae99d6f5d0bacc866cc97c0588975957a5af89f3418e67",
+      "bytes": 3895,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/mvbench_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/mvbench_dataset.py",
+      "sha256": "33b9adcdb2e046b5a537c8acb8a9f5172199ab2a6b8d5ecdd7e090f44330de72",
+      "bytes": 11399,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/nextqa_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/nextqa_dataset.py",
+      "sha256": "7788f3b0dc8b6ae05c99f41951d0176f873a1eb29442612c6a86c6f91c489d25",
+      "bytes": 5853,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/sounddescs_retrieval_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/sounddescs_retrieval_dataset.py",
+      "sha256": "5d7b2e0229a96e4956b236063089716a45358be719bcaa98cb8c2eabc009c99e",
+      "bytes": 12554,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/speechcoco_retrieval_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/speechcoco_retrieval_dataset.py",
+      "sha256": "4c011c67cea93873332a3b5cdf9821b65698f055b8e1e9cd1da106c9b376d8e2",
+      "bytes": 12009,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/ssv2_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/ssv2_dataset.py",
+      "sha256": "ae6f0369dcc5abbf5f0ac49337d691077e3526f53dfdd7694008cf4cd9fb3c50",
+      "bytes": 3738,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/toolde_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/toolde_dataset.py",
+      "sha256": "ea953290b1ba9c1670037c8ad8d75f6d207d469c475e18a380fda106295512a3",
+      "bytes": 15217,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/tutsound_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/tutsound_dataset.py",
+      "sha256": "d22ca7672f5f89fb5cd14dc8584340395204c00526fe65f083aed30f50bf471d",
+      "bytes": 8225,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/tutsound_hard_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/tutsound_hard_dataset.py",
+      "sha256": "38db1c91a26bea67a0235f86c537e3392037c971f37f22797ed65e76744a4aee",
+      "bytes": 7687,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/vatex_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/vatex_dataset.py",
+      "sha256": "1651d162fc859ef5d584d600fb9c9b380149c29a5413d44c580e0771769696a7",
+      "bytes": 3610,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/video_classification_datasets.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/video_classification_datasets.py",
+      "sha256": "74b0a7aecf35330059adb0a769e972b6b4d3ca23305086e2bdc170ff166e6012",
+      "bytes": 4271,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/video_classification_utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/video_classification_utils.py",
+      "sha256": "105404d49be029571b02eb83f96a558c134ff40199a6851612bb97a6bb467128",
+      "bytes": 28114,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/videomme_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/videomme_dataset.py",
+      "sha256": "140ee57677b93da314deb0f90e2a3ad5fcc8a5d5c7f080aa38faac208dea9a8b",
+      "bytes": 5194,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/videommmu_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/videommmu_dataset.py",
+      "sha256": "e7d0110bd2b6b8de2b1fdd53f20771c4601e86338fca08aa2fcb9991a20b9c5c",
+      "bytes": 6142,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/vidore_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/vidore_dataset.py",
+      "sha256": "5b43110c4305275b0137c6ca2780cd54f24febb85e7396a4f5f9e5964b955294",
+      "bytes": 7605,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/visrag_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/visrag_dataset.py",
+      "sha256": "e62400554acbcdf495753ea015aa6bf0c8d234ba15fe821a571cde5e4d4f7932",
+      "bytes": 7091,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/data/eval_dataset/youcook2_dataset.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/data/eval_dataset/youcook2_dataset.py",
+      "sha256": "d33357e6a02dff86845ed2c79702dafcb9e21bae8f381e2c71c2b790b0b04384",
+      "bytes": 4096,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/model.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/model.py",
+      "sha256": "020e1940ce76d943ba4621f3437409b54999dac622a66a6bf5f6d684de97e91c",
+      "bytes": 52033,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/processor.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/processor.py",
+      "sha256": "2b924f04f9bc1456336dd0c2c83bd16e640c74fffc99fef79a9593726c94a390",
+      "bytes": 103824,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/utils.py",
+      "sha256": "6b3e368602153f7dbab5d3da5c4b49ac1203e6adf5865b10368ab2a7d43f5d19",
+      "bytes": 3188,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/vlm_backbone/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/vlm_backbone/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/vlm_backbone/qwen2_vl/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/vlm_backbone/qwen2_vl/__init__.py",
+      "sha256": "070354d65cb21c0ca0129fffae6616bd516e3ba166076d184dbc5f6d52b736c4",
+      "bytes": 2274,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/vlm_backbone/qwen2_vl/qwen_vl_utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/vlm_backbone/qwen2_vl/qwen_vl_utils.py",
+      "sha256": "3e0f1cd5b62d1bc4448beaf4c5c4c9319e35e6dad65e35de2da4775ca7c46356",
+      "bytes": 14635,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/model/wave_official_utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/model/wave_official_utils.py",
+      "sha256": "5fa9545d51e698a17a329a23631bd3d956952c21c50271cb74037a06f61738f1",
+      "bytes": 1652,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/basic_utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/basic_utils.py",
+      "sha256": "e6f8e4cf61fcdea25a47249ead6b1f005f263dc01161d1d2e0fad273425d79fb",
+      "bytes": 1490,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/dataset_utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/dataset_utils.py",
+      "sha256": "0563cd2ee75323771cc3b419cee8c3c009dcbffd26b23d69fa5e6b431bf5267a",
+      "bytes": 5933,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/eval_utils/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/eval_utils/__init__.py",
+      "sha256": "34fccaed77780bac9de37872d9f1a2b69e1535db6f1f83a2a1bb64de2c3b2d69",
+      "bytes": 66,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/eval_utils/metrics.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/eval_utils/metrics.py",
+      "sha256": "ec2f8d9b1a0f038f1045e59179f50231fa1650ac15c3f7bfb97f494bb5fdb2ff",
+      "bytes": 11369,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/vision_utils/__init__.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/vision_utils/__init__.py",
+      "sha256": "756f23e45520c9db66979a4cdc6d9e4e25980ba9923f3249145c85bc2c0477a6",
+      "bytes": 61,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/vision_utils/video_transforms.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/vision_utils/video_transforms.py",
+      "sha256": "9ddbe8adfd63f9c52ab95927f3fa9b9167f3250fabfc969a1248c4e5577831f3",
+      "bytes": 23748,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/mmeb_v3_eval/src/utils/vision_utils/vision_utils.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/mmeb_v3_eval/src/utils/vision_utils/vision_utils.py",
+      "sha256": "28405adf59455ca3e70d28f59e835cf2dc168bb532d951deb50ef209f098c8ea",
+      "bytes": 13015,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/requirements.txt",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/requirements.txt",
+      "sha256": "06b630b31d489ea2d88e43588eae1b6561088330fbe6fefb0120b5187b13ad43",
+      "bytes": 103,
+      "executable": false
+    },
+    {
+      "path": "wemm/official-locked/scripts/patch_sglang_video.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/scripts/patch_sglang_video.py",
+      "sha256": "4c9dd693c02724513f7d1e433f88df9702e504d1ab4d1b6d2db6200e64d5c851",
+      "bytes": 1916,
+      "executable": true
+    },
+    {
+      "path": "wemm/official-locked/scripts/serve_sglang.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/scripts/serve_sglang.sh",
+      "sha256": "762287f1709f4819751798adac06331e3cff484659c0318e85ed5de4b9e29e21",
+      "bytes": 328,
+      "executable": true
+    },
+    {
+      "path": "wemm/official-locked/scripts/serve_vllm.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/official-locked/scripts/serve_vllm.sh",
+      "sha256": "ef970c9bda210ecdf5559922558d677afc72769fcad375f16a997f8dc4830daf",
+      "bytes": 204,
+      "executable": true
+    },
+    {
+      "path": "wemm/requirements.lock",
+      "origin": "/home/realmagic/wemm-embedding-lab/requirements.lock",
+      "sha256": "bcf66a0b4e2907737fa159fe1c6bd1ff0d962f40c42585b73d9ba7b22156c12e",
+      "bytes": 1676,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/acceptance.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/acceptance.py",
+      "sha256": "1a4542bfc603edaa0ec863c34bf30925792d3b092a67f389aacdaf5624056d2e",
+      "bytes": 4701,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/browser_acceptance.cjs",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/browser_acceptance.cjs",
+      "sha256": "3d2f774bd773c412c00a6c2468c9a1e3a35f7eab94b28daf12f7c25a9d9a5e9d",
+      "bytes": 6409,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/browser_offline.cjs",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/browser_offline.cjs",
+      "sha256": "2b4290762eab10afaa41f81fdf669f8a7a779729f8fdc9fca0f17e1a7d7c2b38",
+      "bytes": 2232,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/browser_smoke.cjs",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/browser_smoke.cjs",
+      "sha256": "eed5e053b40ae21506e5b9e6deaf813b0679f216851b670d853e6d0d30d2a593",
+      "bytes": 1839,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/browser_upload_extra.cjs",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/browser_upload_extra.cjs",
+      "sha256": "b7f5c35f8a9f22066f8af22effddf6659768d30c5058305928c18fcc5d034d30",
+      "bytes": 3920,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/build_frontend.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/build_frontend.sh",
+      "sha256": "153375c8e0e791c933dd5066d03a38f1e09d1cc2206d80f684d4369bd8c58b6c",
+      "bytes": 150,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/build_report.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/build_report.py",
+      "sha256": "ecad476dc44954457d34f9020e38455eaecb6e4afc2a71a3760d0e94b2eb14e9",
+      "bytes": 19221,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/client.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/client.py",
+      "sha256": "712d280db8df83a6c7dc12beaf41a04fef66570281894061d845f0321f639997",
+      "bytes": 1038,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/collect_evidence.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/collect_evidence.py",
+      "sha256": "2762daf9287f7e0f14f4da7bad1ceb61dbd82c23e79c4fb8632137a71ce9fa3b",
+      "bytes": 1446,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/download_model.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/download_model.py",
+      "sha256": "392b8b1b0a52388b8feff5abfd3c97c85f744160a6454b29e5d16ac6938fb51b",
+      "bytes": 4144,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/download_model.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/download_model.sh",
+      "sha256": "de648b4f9d1fbd4d72f545f567abd8cb71ba25c4c2a6d02f56984cf88ee157c9",
+      "bytes": 216,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/export_report.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/export_report.sh",
+      "sha256": "9cf4c06201aa5962fcc466c34c73a91c69047b5ebd8a3baa86673d1659606025",
+      "bytes": 89,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/fetch_coco.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/fetch_coco.py",
+      "sha256": "15da0ad0a6ff4e77d2ae256e172d99ce49084dc8b3b56a8def81519a23aeb547",
+      "bytes": 1354,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/format_checks.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/format_checks.py",
+      "sha256": "76b773979ca75d93da8d4557190c6791cdd64f4c32b0b7564b517c867d80c77e",
+      "bytes": 2865,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/freeze_benchmark.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/freeze_benchmark.py",
+      "sha256": "b65215644e8d5065be3d8ac9ab8415d5e8f8c5102f7a710ecc58fcfc3c50d3a5",
+      "bytes": 5533,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/generate_samples.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/generate_samples.py",
+      "sha256": "5de64fa61027998960ada0475178a991e0d9d0c99ded0040a4e950d1e592f10a",
+      "bytes": 3946,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/generate_videos.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/generate_videos.py",
+      "sha256": "16a2d4f747c484573073ccdd7431b974e74dbe8f25a2c571a37ee32d1e6f1f6a",
+      "bytes": 1224,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/gpu_monitor.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/gpu_monitor.py",
+      "sha256": "fabb625416d5f0fde9d6afa3595520422565d1767a13c07c5c2d5466097858c8",
+      "bytes": 872,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/import_demo.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/import_demo.sh",
+      "sha256": "792f2e8e099b3d0fb974ae41b34ddbd3947ae77ff78fb1b7f38fdeefbbb0b5c3",
+      "bytes": 87,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/lock_sources.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/lock_sources.py",
+      "sha256": "1c10d146bbb99f78568cad572228dd34d4c00d8a029f3d209e42d863e57eda06",
+      "bytes": 1965,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/logs.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/logs.sh",
+      "sha256": "841ec7cf51702699232f4c631595d9ec0ae552beef96ba4a21380123b012c11c",
+      "bytes": 87,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/manage.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/manage.py",
+      "sha256": "6a9cb5bacd0be82a93656b800109fdaa8ef9351b4acdcee8cc3ec2d66838a62c",
+      "bytes": 2510,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/offline_checks.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/offline_checks.py",
+      "sha256": "794d0d082e3f5453f41aa5814d7b49fd3557df32f6a2d02c557fd6072ea37687",
+      "bytes": 1151,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/package_delivery.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/package_delivery.py",
+      "sha256": "dcf04d3928567d7c3f26a7983cc09b994be41f61973e7c1ba1e5f352279ff3af",
+      "bytes": 1572,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/README.md",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/README.md",
+      "sha256": "b9eac860f18df3ca6be6e129ba71f8f22b1ab345baffdd67ceacfe498f2989dd",
+      "bytes": 4963,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/acceptance.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/acceptance.py",
+      "sha256": "898a5062e96b8666320699fe2035a5a99a36e92909cb72b084ad291f47edc40d",
+      "bytes": 4178,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/bench.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/bench.py",
+      "sha256": "32f9931e450bdf792e5e732a76f3f7027ffc8b9b3e4ddbb2e966186114fefe2e",
+      "bytes": 14695,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/report.css",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/report.css",
+      "sha256": "899ec73259c4954648c12bd886fa7db87d54523426582acab8daef265d43363e",
+      "bytes": 2116,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/report.html",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/report.html",
+      "sha256": "4d4403785e7b46b2e54ad16e58070d4d1a4b5861f6c7376397f9c7767bb2ca9b",
+      "bytes": 2854,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/report.js",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/report.js",
+      "sha256": "e178b0995b744e3cef3347da4eb9cc642309f8b74459609049c1fcf29d409bbe",
+      "bytes": 4114,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/report.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/report.py",
+      "sha256": "82e95d887ddd6a5121854338d2554984da111ecbe91d4f85c8d559f55e335f17",
+      "bytes": 8045,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/rewrite.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/rewrite.py",
+      "sha256": "c21d2b9d13a35bbc0c289c4c1610f79a9f7424739b820d16b86cfbc6d77ce3b6",
+      "bytes": 5977,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/photobench/run.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/photobench/run.py",
+      "sha256": "d99592682d4e45e1c7db39933541521a6ec287a36bfadb4aeb21057de277951e",
+      "bytes": 1142,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/preflight.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/preflight.sh",
+      "sha256": "a2a1c02abe8ea3e88d3f119602abf065bfda2ac07eca341d58a7e373682a915b",
+      "bytes": 844,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/prepare_photos.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/prepare_photos.py",
+      "sha256": "cf9c8422f5498451a801c69d1034593fea5e3e153995406e4b6258dec8f670d9",
+      "bytes": 2191,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/prepare_snapshot.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/prepare_snapshot.py",
+      "sha256": "0bf5b6b5dfcb9ad83a32820a35366446a183506af8a13a6c336f2043b3b3ed73",
+      "bytes": 1105,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/recover.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/recover.sh",
+      "sha256": "b08cc0e9cde6011aeaa85db7e4ec4b7b50d1c0bb2dc8775de28aa95406743320",
+      "bytes": 90,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/recovery_acceptance.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/recovery_acceptance.py",
+      "sha256": "8c2444542eb3508394705bab7427cf83c02cede590d9142f3faf75b7a7c9e0a1",
+      "bytes": 4405,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/report_browser_qa.cjs",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/report_browser_qa.cjs",
+      "sha256": "b3dbe4e3f179a02a1e32a73288f895813268bc1c0c7958fc8761e75b69774a96",
+      "bytes": 1342,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/run_benchmark.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/run_benchmark.sh",
+      "sha256": "23eaf4b3d1d9c6b800711b6f8990a62b46f2755cad9adf8bacb5a551ccc5e46f",
+      "bytes": 92,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/run_first_validation.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/run_first_validation.sh",
+      "sha256": "1bab5d9d7d510ce0eb8bbef310aa90dec7bb7a3254f3e61bcd6aa3908526d842",
+      "bytes": 601,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/setup.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/setup.sh",
+      "sha256": "47bce885f37358621757009f213af101597343558445b1cc7500a4c4e892548c",
+      "bytes": 347,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/smoke.py",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/smoke.py",
+      "sha256": "03142bc290cb1a6bad433d026fa98f9bd2916d60759e4e23ae20e1b7f4a92ee1",
+      "bytes": 3888,
+      "executable": false
+    },
+    {
+      "path": "wemm/scripts/start.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/start.sh",
+      "sha256": "fa29bb178658bc1c1173abfdac792ec38bfb4a053f7553e92198640d9f21734d",
+      "bytes": 88,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/status.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/status.sh",
+      "sha256": "648e443ee424b6d69fb07c87b789c389d094df81aaa26c531b187bec52a62e83",
+      "bytes": 89,
+      "executable": true
+    },
+    {
+      "path": "wemm/scripts/stop.sh",
+      "origin": "/home/realmagic/wemm-embedding-lab/scripts/stop.sh",
+      "sha256": "231fc719e6d7852a1cd0d2e8c6165de2642379d83531b8fabd590f3d0fe85aaa",
+      "bytes": 87,
+      "executable": true
+    },
+    {
+      "path": "docs/project/CAMROLL_BUILD_SUMMARY_20260916.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/CAMROLL_BUILD_SUMMARY_20260916.md",
+      "sha256": "02ece621aa31f189f88a07c87fd5a82696af7b5c0a19901274f0d2165800ea27",
+      "bytes": 21961,
+      "executable": false
+    },
+    {
+      "path": "docs/project/ARCHITECTURE.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/ARCHITECTURE.md",
+      "sha256": "103165664746badc1e74724e72c1904e4eb5d0c5ffad659193c00443e9895d10",
+      "bytes": 6439,
+      "executable": false
+    },
+    {
+      "path": "docs/project/API.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/API.md",
+      "sha256": "ac9e56664e217517dc801b58d5b8afeabb673116ea0d0313a83bff59f3330a27",
+      "bytes": 6309,
+      "executable": false
+    },
+    {
+      "path": "docs/project/USAGE.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/USAGE.md",
+      "sha256": "4c0b3bc322ed782d1a370463bb2f85724f63028d1c059300413c2171a9c4e178",
+      "bytes": 6202,
+      "executable": false
+    },
+    {
+      "path": "docs/project/PHOTOBENCH_INTEGRATION_PLAN_20260916.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/PHOTOBENCH_INTEGRATION_PLAN_20260916.md",
+      "sha256": "63c15d12b4ad9bc1b04e8bc24d1b76daf7e865589d9c874702dab71e50d99fdf",
+      "bytes": 17421,
+      "executable": false
+    },
+    {
+      "path": "docs/project/README.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/README.md",
+      "sha256": "e815375c786cd5dba8021fdd317e02d38b9905fc865582bd9929f1a53beff210",
+      "bytes": 2682,
+      "executable": false
+    },
+    {
+      "path": "docs/project/CAMROLL_ARCHITECTURE.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/CAMROLL_ARCHITECTURE.md",
+      "sha256": "6a45773920d130032b22857ce94ec08963fb64767372650e53a9799294aaa001",
+      "bytes": 8857,
+      "executable": false
+    },
+    {
+      "path": "docs/project/SENTRIX_METADATA_IDENTITY_ANALYSIS_20260916.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/SENTRIX_METADATA_IDENTITY_ANALYSIS_20260916.md",
+      "sha256": "3d42db5c5a2341a03fcd940daf00f601030c4f25e51036c4daf14969d1532e9d",
+      "bytes": 13699,
+      "executable": false
+    },
+    {
+      "path": "docs/project/HANDOFF.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/HANDOFF.md",
+      "sha256": "3909493b35416c459888cf0b91fad1d62318cff477ec8a823b726307e436fced",
+      "bytes": 4791,
+      "executable": false
+    },
+    {
+      "path": "docs/project/TESTS_AND_RESULTS.md",
+      "origin": "/Users/zhanyiqi/Documents/camwwem/docs/TESTS_AND_RESULTS.md",
+      "sha256": "c220013c8ed62bf028beb57212e8c70b7a4abc9612999991a57791f2ed881fa1",
+      "bytes": 7420,
+      "executable": false
+    }
+  ],
+  "excluded_categories": [
+    "model weights and caches",
+    "private media and identity references",
+    "QA and GT datasets",
+    "runtime results and logs",
+    "databases and raw vectors",
+    "credentials and environment values",
+    "virtual environments",
+    "original Git objects",
+    "generated egg-info metadata"
+  ]
+}

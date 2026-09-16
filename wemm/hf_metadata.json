@@ -1,0 +1,99 @@
+{
+  "id": "tencent/WeMM-Embedding-9B",
+  "sha": "00c52839de57a6d4fd5b78cf5522ccf0ac8ea482",
+  "files": [
+    {
+      "name": ".gitattributes",
+      "size": 50,
+      "lfs": null
+    },
+    {
+      "name": "LICENSE",
+      "size": 24545,
+      "lfs": null
+    },
+    {
+      "name": "README.md",
+      "size": 7888,
+      "lfs": null
+    },
+    {
+      "name": "additional_chat_templates/sentence_transformers.jinja",
+      "size": 1452,
+      "lfs": null
+    },
+    {
+      "name": "chat_template.jinja",
+      "size": 7755,
+      "lfs": null
+    },
+    {
+      "name": "config.json",
+      "size": 3068,
+      "lfs": null
+    },
+    {
+      "name": "config_sentence_transformers.json",
+      "size": 245,
+      "lfs": null
+    },
+    {
+      "name": "embedding_chat_template.jinja",
+      "size": 1086,
+      "lfs": null
+    },
+    {
+      "name": "model.safetensors",
+      "size": 18815757458,
+      "lfs": {
+        "size": 18815757458,
+        "sha256": "b6d5dff9e632973991f1d0cbfcfd26c42ffd66fbb8ebd6f852aece08e9794fa4",
+        "pointer_size": 136
+      }
+    },
+    {
+      "name": "modeling_st_wemm.py",
+      "size": 3180,
+      "lfs": null
+    },
+    {
+      "name": "modeling_wemm_embedding.py",
+      "size": 1205,
+      "lfs": null
+    },
+    {
+      "name": "modules.json",
+      "size": 106,
+      "lfs": null
+    },
+    {
+      "name": "patch_sglang_video.py",
+      "size": 1983,
+      "lfs": null
+    },
+    {
+      "name": "processor_config.json",
+      "size": 1191,
+      "lfs": null
+    },
+    {
+      "name": "sentence_bert_config.json",
+      "size": 950,
+      "lfs": null
+    },
+    {
+      "name": "tokenizer.json",
+      "size": 19990378,
+      "lfs": {
+        "size": 19990378,
+        "sha256": "40e444c744512f423da4c8443c47c21e22ff76056ba4e9796a81c04c13a9daf0",
+        "pointer_size": 133
+      }
+    },
+    {
+      "name": "tokenizer_config.json",
+      "size": 1148,
+      "lfs": null
+    }
+  ]
+}

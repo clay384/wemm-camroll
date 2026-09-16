@@ -1,0 +1,33 @@
+host: 0.0.0.0
+port: 8765
+gpu_uuid: GPU-4ef9200c-d8f3-638a-3eeb-26fe4fa3d7b0
+model_id: tencent/WeMM-Embedding-9B
+revision: 00c52839de57a6d4fd5b78cf5522ccf0ac8ea482
+model_path: models/WeMM-Embedding-9B
+precision: bfloat16
+dimension: 4096
+batch_size: 1
+profile: interactive_3090
+profiles:
+  reference:
+    image_pixels: 262144
+    video_pixels: 65536
+    video_frames: 4
+    text_tokens: 512
+  interactive_3090:
+    image_pixels: 262144
+    video_pixels: 65536
+    video_frames: 4
+    text_tokens: 512
+video_segment_seconds: 8
+video_max_seconds: 300
+pdf_max_pages: 100
+upload_max_mb: 128
+image_max_pixels: 45000000
+preprocess_timeout: 60
+import_root: import
+queue_limit: 500
+cpu_threads: 4
+gpu_reserve_mib: 2048
+text_max_chars: 200000
+text_max_bytes: 2097152

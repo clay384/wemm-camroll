@@ -1,0 +1,2 @@
+# WeMM independent validation
+Only this directory and /home/realmagic/wemm-embedding-lab belong to this task. Do not read or connect existing CamRoll/Sentrix/NX business systems. No changes to other services, system settings or credentials. One BF16 9B worker only; preserve shared GPU headroom. Record OBSERVED / REPORTED / NOT_RUN honestly. Never index qrels, filenames or evaluation labels. Update CURRENT_STATE.md and WORKLOG.md after each stage. Never package runtime secrets, environments, private uploads or model weights.

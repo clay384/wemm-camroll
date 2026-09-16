@@ -1,0 +1,11 @@
+.venv/
+.hf/
+models/
+run/
+logs/
+data/
+import/
+__pycache__/
+*.pyc
+.env
+*.tar.gz
