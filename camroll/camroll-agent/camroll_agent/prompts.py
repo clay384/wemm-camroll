@@ -19,11 +19,11 @@ SYSTEM_PROMPT_MCQ_SUFFIX = "\n这是选择题。有充分证据时只输出选�
 SYSTEM_PROMPT_RESPONSE_PROTOCOL = ""  # Legacy import compatibility; no private reasoning protocol.
 RESPONSE_PROTOCOL = ""
 
-STRUCTURED_FINAL_SUFFIX = """\n最终回答使用一个JSON对象，不加代码块：
+STRUCTURED_FINAL_SUFFIX = """\n最终回答使用一个JSON对象，不加代码块，不在对象之前或之后输出说明或分析：
 {"answer":"给用户的中文回答","outcome":"answer或clarify或refuse","selected_image_ids":["img_实际ID"]}
 工具调用仍使用原生工具协议，不在普通文本中伪造调用。
 selected_image_ids只列明确交付给用户、支持本次回答的图片，不把所有候选自动交付；使用已返回的真实ID。正文引用的每张图必须也列入此数组。找图请求应完整交付已核实符合条件的记录，不任意只挑一张。事实问答和总结应交付支持结论的照片。
-需要消除具体歧义时可以直接clarify；明确不能提供或证据不足时refuse；这两类交付列表为空。合法澄清和拒答不要求先调用工具。不要为了不确定细节忽略用户已经明确给出的已知前提。
+用户指代的照片或事件缺少可定位条件，且当前对话没有消除歧义时，先clarify询问具体条件，不通过浏览所有照片猜测用户意图。明确不能提供或证据不足时refuse；这两类交付列表为空，正文也不引用图片ID。合法澄清和拒答不要求先调用工具。不要为了不确定细节忽略用户已经明确给出的已知前提。
 """
 
 

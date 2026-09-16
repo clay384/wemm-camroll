@@ -340,7 +340,12 @@ class Agent:
                                 if invalid_rounds >= 3:
                                     stop_reason = "final_response_error"
                                     break
-                                messages.append({"role": "user", "content": "最终回答结构无效。按规定JSON格式输出，selected_image_ids只能来自已经返回的图片；每个正文图片引用必须在交付列表中。"})
+                                messages.append({"role": "user", "content": (
+                                    "最终回答结构校验未通过：" + str(exc)[:300] + "。"
+                                    "只修正最终JSON对象，不输出对象以外的说明或分析。"
+                                    "若outcome是clarify或refuse，selected_image_ids必须是[]，正文也不能引用图片ID；"
+                                    "澄清应询问能消除歧义的具体条件。若outcome是answer，交付ID只能来自已返回的证据，"
+                                    "且正文每个图片引用都必须在交付列表中。不要为修正格式重复已经成功的检索。")})
                                 continue
                             stop_reason = "ok"
                             break

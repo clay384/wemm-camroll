@@ -63,6 +63,15 @@ def test_unknown_delivery_is_repaired_and_never_counted():
     assert result.selected_image_ids == ["img_1"] and result.stopped_reason == "ok"
 
 
+def test_clarification_repair_explains_conflicting_delivery():
+    agent, client, _ = make([response(tool()), final("哪一年？ [img_1]", "clarify", ["img_1"]),
+                             final("哪一年？", "clarify")])
+    result = agent.ask("找那张", structured_output=True)
+    assert result.turn_outcome == "clarify" and result.selected_image_ids == []
+    repair = json.dumps(client.messages[-1], ensure_ascii=False)
+    assert "Clarification/refusal" in repair and "selected_image_ids必须是[]" in repair
+
+
 def test_prior_turn_tool_evidence_can_be_used_but_other_session_cannot():
     agent, _, _ = make([response(tool()), final("这里有公园。", ids=["img_1"]),
                         final("这一张", ids=["img_1"])])
