@@ -177,4 +177,33 @@ def summary(state):
     result["task_decision_unjudged_count"] = max(0, result["task_decision_planned_count"] - result.get("task_decision_valid_count", 0))
     result["not_started_count"] = max(0, result["planned_count"] - len(state.get("items", [])))
     result["unexecuted_turn_count"] = max(0, state.get("planned_turn_count", result["executed_turn_count"]) - result["executed_turn_count"])
+    candidates = [r["candidate_retrieval_counts"] for r in eligible
+                  if isinstance(r.get("candidate_retrieval_counts"), dict) and r["candidate_retrieval_counts"].get("gt", 0) > 0]
+    result["candidate_coverage_count"] = len(candidates)
+    result["candidate_any_hit_rate"] = sum(r.get("matched", 0) > 0 for r in candidates) / len(candidates) if candidates else None
+    result["candidate_all_hit_rate"] = sum(r.get("matched", 0) >= r["gt"] for r in candidates) / len(candidates) if candidates else None
+    items = state.get("items") or []
+    latencies = [(r.get("timing_breakdown") or {}).get("agent_wall_ms") for r in items]
+    latencies = [v for v in latencies if isinstance(v, (int, float))]
+    result["agent_task_latency_p50_ms"] = nearest_rank_percentile(latencies, .5)
+    result["agent_task_latency_p95_ms"] = nearest_rank_percentile(latencies, .95)
+    result["agent_task_latency_sample_count"] = len(latencies)
+    # Serialized distribution keys may be integers in fresh calculations.
+    dist = result.get("judge_distribution", {})
+    result["quality_correct_planned_rate"] = (dist.get("2", dist.get(2, 0)) / result["planned_count"]
+        if result["planned_count"] else None)
+    if state.get("system_id") == "sentrix":
+        if not any(r.get("execution_status") is not None for r in items):
+            result["execution_error_count"] = None
+        result["task_decision_planned_count"] = 111 if state.get("qa_set") == "100qa-full" and len(items) == 100 else result["task_decision_planned_count"]
+        result["task_decision_unjudged_count"] = max(0, result["task_decision_planned_count"] - result.get("task_decision_valid_count", 0))
+    if state.get("mode") in {"reuse", "repair"}:
+        result["benchmark_e2e_latency_excluding_judge_ms"] = None
+    if state.get("mode") == "composite":
+        original = state.get("original_timing_summary") or {}
+        for key, value in original.items():
+            if any(word in key for word in ("latency", "tokens", "ttft", "per_second")) or key in {
+                "tool_performance", "model_role_performance", "model_call_count", "agent_task_latency_sample_count"}:
+                result[key] = copy.deepcopy(value)
+        result["performance_source"] = state["parent_run_id"]
     return result

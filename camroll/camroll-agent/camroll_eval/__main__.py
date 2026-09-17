@@ -21,9 +21,26 @@ def main(argv=None):
     history.add_argument("directory")
     replay = commands.add_parser("replay-history")
     replay.add_argument("directory")
+    repair = commands.add_parser("repair-qa")
+    repair.add_argument("parent_id")
+    repair.add_argument("--run-id", required=True)
+    repair.add_argument("--qa-ids", nargs="+", required=True)
+    caption = commands.add_parser("repair-caption")
+    caption.add_argument("parent_id")
+    caption.add_argument("--repair-id", required=True)
     args = parser.parse_args(argv)
     root, source, albums = configured_paths()
-    if args.command == "serve":
+    if args.command == "repair-qa":
+        from .repair import RepairRunner
+        result = RepairRunner(root, source, albums).run_repair(args.parent_id, args.qa_ids, run_id=args.run_id)
+        print(json.dumps({"run_id": result["run_id"], "status": result["status"], "repaired_valid_count": result["repaired_valid_count"]}))
+        return 0
+    elif args.command == "repair-caption":
+        from .repair import repair_caption
+        result = repair_caption(root, albums, args.parent_id, repair_id=args.repair_id)
+        print(json.dumps({k: result.get(k) for k in ("repair_id", "status", "derived_index_version")}))
+        return 0
+    elif args.command == "serve":
         from .service import create_app
         import uvicorn
         # Avoid access logs containing arbitrary request bodies or credentials.

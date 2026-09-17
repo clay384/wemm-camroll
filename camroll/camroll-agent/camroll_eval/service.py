@@ -122,6 +122,11 @@ def create_app(root=None, source=None, albums=None, *, access_key=None, runner_f
     def runs():
         return {"runs": repo.list()}
 
+    @app.get("/api/comparison-profile")
+    def comparison_profile():
+        path = root / "comparison-profile.json"
+        return read_json(path) if path.is_file() else {}
+
     @app.get("/api/compare")
     def compare(ids: str):
         values = ids.split(",")
@@ -179,7 +184,9 @@ def create_app(root=None, source=None, albums=None, *, access_key=None, runner_f
     @app.get("/api/runs/{run_id}/resources")
     def resources(run_id: str):
         try:
-            directory = repo.path(run_id).parent
+            state = repo.load(run_id)
+            resource_id = state.get("parent_run_id") if state.get("mode") == "composite" else run_id
+            directory = repo.path(resource_id).parent
         except (FileNotFoundError, ValueError):
             raise HTTPException(404, "run not found") from None
         path = directory / "resources.jsonl"

@@ -35,6 +35,8 @@ class Repository:
             state["import_provenance"] = read_json(path.parent / "provenance.json")
             state["summary"] = summary(state)
             state["comparison_scope"] = "historical_system_comparison"
+        if path.parent.parent.name == "runs":
+            state["summary"] = summary(state)
         self._cache[key] = (stamp, state)
         return copy.deepcopy(state)
 
@@ -43,7 +45,9 @@ class Repository:
         keys = ("run_id", "system_id", "mode", "status", "created_at", "started_at", "finished_at", "updated_at",
                 "album_id", "dataset_id", "qa_set", "qa_count", "config", "model_profile", "model_name",
                 "judge_model", "qa_concurrency", "judge_concurrency", "cache_mode", "timing_comparable",
-                "formal_protocol", "protocol_label",
+                "formal_protocol", "protocol_label", "view_kind", "parent_run_id", "repair_run_id",
+                "repair_qa_ids", "repair_wall_ms", "repair_budget_before", "repair_budget_after",
+                "repaired_valid_count", "attempted_turn_count_total", "budget_before", "budget_after", "phases",
                 "index_version", "summary", "resource_summary", "code_revision", "fatal_error")
         return {key: state.get(key) for key in keys if key in state}
 
@@ -61,10 +65,15 @@ class Repository:
         source = Path(directory).resolve()
         state = read_json(source / "run.json")
         run_id = safe_id(state["run_id"])
-        if state.get("album_id") != "album3-max" or state.get("qa_set") != "100qa-full" or state.get("mode") != "full":
-            raise ValueError("historical comparison requires full album3-max / 100qa-full")
+        if state.get("album_id") != "album3-max" or state.get("qa_set") != "100qa-full" or state.get("mode") not in {"full", "reuse"}:
+            raise ValueError("historical comparison requires full/reuse album3-max / 100qa-full")
         if len(state.get("items") or []) != 100:
             raise ValueError("historical run must contain 100 QA records including failures")
+        if state.get("mode") == "reuse":
+            integrity = state.get("input_integrity") or {}
+            if (integrity.get("qa_sha256") != "f625ae9e26b4666c277b424bd472b6790baf0d6773e9020b20eff985d4cc2eb0" or
+                integrity.get("dataset_sha256") != "120e2e7273e731ed24fd24cdf477ce81e7c6b71e43554b0366aa8677b8098627"):
+                raise ValueError("reuse input does not match the approved comparison dataset")
         target = self.root / "origins" / run_id
         digest = sha256(source / "run.json")
         if target.exists():
@@ -74,7 +83,7 @@ class Repository:
         temporary = target.with_name("." + run_id + ".importing")
         if temporary.exists():
             raise ValueError("incomplete historical import exists; inspect before retry")
-        temporary.mkdir(parents=True)
+        temporary.mkdir(parents=True, mode=0o700)
         files = []
         try:
             for name in ("run.json", "results.jsonl", "gpu_samples.jsonl"):
