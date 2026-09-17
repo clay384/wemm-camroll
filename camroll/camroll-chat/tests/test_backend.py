@@ -105,6 +105,7 @@ def upstream(request: httpx.Request) -> httpx.Response:
                         "id": "ev_1234", "name": "秦皇岛合影", "date_start": "2019-07-22",
                         "date_end": "2019-07-22", "location": "秦皇岛", "people": ["明明", "乐乐"],
                         "description_preview": "在主题沙雕前合影", "image_ids": [IMAGE_ID],
+                        "face_instances": [{"name": "明明", "image_ids": [IMAGE_ID]}],
                     }]
                 },
             }],

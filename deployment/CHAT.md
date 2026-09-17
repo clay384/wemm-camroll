@@ -17,15 +17,23 @@ release 必须来自已经测试和提交的 Git bundle／干净检出，`HEAD` 
 
 ## 创建环境与发布
 
-在可信机器从已经推送的提交创建 Git bundle，在 `.100` 从该 bundle 检出完整提交到上述 release 目录，核验 `HEAD` 和干净状态后执行 `chmod -R a-w "$RELEASE"`。不要用 `git archive`，因为它没有可供管理器验证的 Git 对象。在该 release 根使用 `camroll/camroll-chat/requirements.txt` 安装页面的固定版本依赖；该文件引用同目录的 `requirements-linux-py310.lock` 约束传递依赖。凭据不得写进 release、命令行或日志。相册、索引和累计预算账本仍由现有 8772/CamRoll 运行根持有，8773 不复制或迁移它们。
+在可信机器从已经推送的提交创建 Git bundle，在 `.100` 从该 bundle 检出完整提交到上述 release 目录，核验 `HEAD` 和干净状态后执行 `chmod -R a-w "$RELEASE"`。检出时显式指定 `main`，避免 bundle 没有远端默认分支标记时留下未检出的工作树。不要用 `git archive`，因为它没有可供管理器验证的 Git 对象。在该 release 根使用 `camroll/camroll-chat/requirements.txt` 安装页面的固定版本依赖；该文件引用同目录的 `requirements-linux-py310.lock` 约束传递依赖。凭据不得写进 release、命令行或日志。相册、索引和累计预算账本仍由现有 8772/CamRoll 运行根持有，8773 不复制或迁移它们。
 
 ```bash
+git bundle create /tmp/wemm-camroll-<40位提交号>.bundle main
+# 将 bundle 传到 .100 的受限临时目录后：
+git clone --branch main /path/to/wemm-camroll-<40位提交号>.bundle \
+  /home/realmagic/camroll-wemm-chat/releases/<40位提交号>
+
 install -d -m 0700 /home/realmagic/camroll-wemm-chat/runtime
 python3 -m venv /home/realmagic/camroll-wemm-chat/.venv
 RELEASE=/home/realmagic/camroll-wemm-chat/releases/<40位提交号>
 cd "$RELEASE"
+test "$(git rev-parse HEAD)" = "$(basename "$RELEASE")"
+test -z "$(git status --porcelain)"
 /home/realmagic/camroll-wemm-chat/.venv/bin/python -m pip install \
   -r "$RELEASE/camroll/camroll-chat/requirements.txt"
+chmod -R a-w "$RELEASE"
 ```
 
 进入当前 release 根后运行：

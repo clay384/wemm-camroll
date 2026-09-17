@@ -240,13 +240,15 @@ def _evidence_metadata(trace: Any, allowed_ids: set[str]) -> dict[str, dict[str,
         date = first(value, ("captured_at", "date_taken", "datetime", "date", "time"))
         if date is None and start:
             date = start if not finish or finish == start else f"{start} 至 {finish}"
+        description_keys = ["description_preview", "caption", "description", "summary", "event_name"]
+        record_id = value.get("id")
+        if value.get("kind") == "event" or (isinstance(record_id, str) and record_id.startswith("ev_")):
+            description_keys.extend(("name", "event"))
         canonical = {
             "date": date,
             "location": first(value, ("location", "place", "trusted_location", "observed_location")),
             "people": first(value, ("people", "trusted_people", "observed_people")),
-            "description": first(value, (
-                "description_preview", "caption", "description", "summary", "event_name", "name", "event",
-            )),
+            "description": first(value, tuple(description_keys)),
             "filename": first(value, ("file_name", "filename")),
         }
         public = {
@@ -278,7 +280,14 @@ def _evidence_metadata(trace: Any, allowed_ids: set[str]) -> dict[str, dict[str,
         public = metadata(value)
         for image_id in image_ids:
             if public:
-                found[image_id] = {**found.get(image_id, {}), **public}
+                current = found.get(image_id, {})
+                merged = dict(current)
+                for key, item in public.items():
+                    if key not in merged or merged[key] in (None, "", []):
+                        merged[key] = item
+                    elif key == "description" and len(str(item)) > len(str(merged[key])):
+                        merged[key] = item
+                found[image_id] = merged
         for key, item in list(value.items())[:100]:
             if not any(token in str(key).lower() for token in
                        ("path", "root", "prompt", "message", "secret")):
