@@ -33,11 +33,9 @@ function judgeLabel(score,judgeStatus,runStatus){
   if([0,1,2].includes(score))return `${score} 分`;
   return alive(runStatus)&&!['failed','incomplete','cancelled','skipped'].includes(judgeStatus)?'待评分':'未评分';
 }
-async function api(path,options={}){const response=await fetch(path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});if(response.status===401){showLogin();throw Error('需要登录');}let body;try{body=await response.json();}catch{body={detail:'响应格式异常'};}if(!response.ok)throw Error(body.detail||body.error||'请求失败');return body;}
+async function api(path,options={}){const response=await fetch(path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});let body;try{body=await response.json();}catch{body={detail:'响应格式异常'};}if(!response.ok)throw Error(body.detail||body.error||'请求失败');return body;}
 function notice(text,error=false){$('#notice').hidden=false;$('#notice').textContent=text;$('#notice').classList.toggle('error',error);}
-function showLogin(){$('#login').hidden=false;$('#app').hidden=true;if(state.poll)clearInterval(state.poll);state.poll=null;}
-async function enter(){await api('/api/health');$('#login').hidden=true;$('#app').hidden=false;$('#access-key').value='';await refresh();await loadProfile();if(!state.poll)state.poll=setInterval(async()=>{if(document.hidden)return;try{await refresh(false);if(state.current&&state.currentData&&alive(state.currentData.status))await openRun(state.current,false);}catch{}},5000);}
-$('#login-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({access_key:$('#access-key').value})});await enter();}catch(err){$('#login-error').textContent=err.message;}});
+async function enter(){await api('/api/health');await refresh();await loadProfile();if(!state.poll)state.poll=setInterval(async()=>{if(document.hidden)return;try{await refresh(false);if(state.current&&state.currentData&&alive(state.currentData.status))await openRun(state.current,false);}catch{}},5000);}
 async function loadProfile(){
   try{
     const p=await api('/api/comparison-profile');if(!p.original_main?.length)return;
@@ -48,7 +46,6 @@ async function loadProfile(){
     };
   }catch(e){notice(e.message,true);}
 }
-$('#logout').addEventListener('click',async()=>{await api('/api/logout',{method:'POST',body:'{}'});showLogin();});
 $('#refresh').addEventListener('click',()=>refresh());
 $('#close-dialog').addEventListener('click',()=>$('#item-dialog').close());
 $('#item-dialog').addEventListener('click',e=>{if(e.target===$('#item-dialog'))$('#item-dialog').close();});
@@ -97,4 +94,4 @@ function renderComparison(data){
   $('#comparison').scrollIntoView({behavior:'smooth'});
 }
 function drawResources(data){const canvas=$('#resource-chart');if(!canvas)return;const samples=data.samples||[];const points=samples.map((r,i)=>{let v=r.gpu_memory_mib;if(typeof v!=='number')v=r.gpu_memory_used_mb??r.memory_used_mb;return {i,v:typeof v==='number'?v/1024:null};}).filter(r=>r.v!==null);$('#resource-note').textContent=points.length?`${data.sample_count} 次实测采样 · 授权GPU 1整卡显存 GiB；不等于WeMM进程或整套云系统显存。`:'当前记录没有可绘制的GPU采样；保留未记录，不用零填充。';const dpr=devicePixelRatio||1,w=canvas.clientWidth||400,h=190;canvas.width=w*dpr;canvas.height=h*dpr;const c=canvas.getContext('2d');c.scale(dpr,dpr);c.clearRect(0,0,w,h);c.strokeStyle='#e5edf2';c.fillStyle='#94a3ae';c.font='10px sans-serif';for(let i=0;i<4;i++){const y=20+i*44;c.beginPath();c.moveTo(35,y);c.lineTo(w-8,y);c.stroke();}if(!points.length){c.fillText('暂无实测曲线',45,86);return;}const hi=Math.max(...points.map(p=>p.v))*1.12||1;for(let i=0;i<4;i++)c.fillText((hi*(1-i/3)).toFixed(1),2,22+i*44);c.strokeStyle='#16878b';c.lineWidth=1.8;c.beginPath();points.forEach((p,index)=>{const x=35+p.i/Math.max(1,samples.length-1)*(w-45),y=152-p.v/hi*132;index?c.lineTo(x,y):c.moveTo(x,y);});c.stroke();c.fillText('开始',35,180);c.fillText('结束',w-34,180);}
-enter().catch(()=>showLogin());
+enter().catch(err=>notice(err.message,true));

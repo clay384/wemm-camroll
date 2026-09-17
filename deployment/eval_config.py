@@ -33,7 +33,6 @@ def configure(release: Path) -> dict[str, str]:
         'CAMROLL_EVAL_ROOT': str(RUNTIME / 'evaluation'),
         'CAMROLL_EVAL_SOURCE_ROOT': str(RUNTIME / 'source/album3-max'),
         'CAMROLL_EVAL_ALBUM_ROOT': str(RUNTIME / 'albums'),
-        'CAMROLL_EVAL_ACCESS_KEY_FILE': str(RUNTIME / 'access.key'),
         'CAMROLL_EVAL_JUDGE_API_KEY_FILE': str(RUNTIME / 'judge.key'),
         'WEMM_BASE_URL': 'http://127.0.0.1:8765',
         'WEMM_KEY_PATH': '/home/realmagic/wemm-embedding-lab/run/access.key',
@@ -43,9 +42,9 @@ def configure(release: Path) -> dict[str, str]:
         'PYTHONUNBUFFERED': '1',
         'CAMROLL_RELEASE_REVISION': release.name,
     })
-    for name in ('access.key', 'judge.key'):
+    for name in ('judge.key',):
         p = RUNTIME / name
         if p.is_symlink() or not p.is_file() or p.stat().st_mode & 0o077:
-            raise RuntimeError('Missing or unsafe independent access/Judge key file')
+            raise RuntimeError('Missing or unsafe independent Judge key file')
     os.environ.update(values)
     return values

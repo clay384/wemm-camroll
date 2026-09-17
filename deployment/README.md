@@ -21,7 +21,7 @@
 /home/realmagic/camroll-wemm/.venv-photobench/bin/python deployment/manage_eval.py status
 ```
 
-服务使用 `python -m camroll_eval serve --host 0.0.0.0 --port 8772`，由 `run_eval.py` 先加载受限配置再启动。`GET /healthz` 只说明进程存活；有认证的 `/api/health` 才提供应用状态，但也不能代替实际模型接入和已建相册验证。网页登录使用独立 access key，不在日志或终端回显它。
+服务使用 `python -m camroll_eval serve --host 0.0.0.0 --port 8772`，由 `run_eval.py` 先加载受限配置再启动。`GET /healthz` 只说明进程存活；`/api/health` 才提供应用状态，但也不能代替实际模型接入和已建相册验证。2026-09-17 起页面按用户要求取消密钥登录，局域网直接访问；写操作仍校验同源。旧 access.key 保留供旧 release 回滚，当前版本不读取。
 
 CLI 通过相同配置入口运行，例如：
 

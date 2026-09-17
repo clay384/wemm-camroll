@@ -269,28 +269,17 @@ def test_budget_exhaustion_stops_without_network(tmp_path):
     assert judge.stop_reason == 'budget_exhausted' and judge._cancel.is_set()
 
 
-def test_auth_all_data_paths_and_same_origin_write_gate(tmp_path, source):
-    app = create_app(tmp_path / 'eval', source, access_key='test-key', mount_agent=False)
-    client = TestClient(app)
-    assert client.get('/healthz').status_code == 200
-    for path in ['/api/health','/api/runs','/api/media/a.jpg','/api/runs/no/export','/api/runs/no/pipeline-calls']:
-        assert client.get(path).status_code == 401
-    assert client.post('/api/login', json={'access_key':'test-key'}).status_code == 403
-    assert client.post('/api/login', headers={'Origin':'http://evil.invalid'}, json={'access_key':'test-key'}).status_code == 403
-    response = client.post('/api/login', headers={'Origin':'http://testserver'}, json={'access_key':'test-key'})
-    assert response.status_code == 200
-    assert 'httponly' in response.headers['set-cookie'].lower() and 'samesite=strict' in response.headers['set-cookie'].lower()
-    assert client.get('/api/runs').status_code == 200
-    assert client.get('/api/media/..%2Fmanifest.json').status_code == 404
-    assert client.post('/api/runs', json={}).status_code == 403
-    assert client.post('/api/runs', json={}, headers={'Origin':'http://testserver'}).status_code == 422  # Formal source gate.
-
-
-def test_missing_access_key_fails_closed(tmp_path, source, monkeypatch):
+def test_lan_access_and_same_origin_write_gate(tmp_path, source, monkeypatch):
     monkeypatch.delenv('CAMROLL_EVAL_ACCESS_KEY', raising=False)
     monkeypatch.delenv('CAMROLL_EVAL_ACCESS_KEY_FILE', raising=False)
-    with pytest.raises(ValueError, match='not configured'):
-        create_app(tmp_path/'eval', source, mount_agent=False)
+    client = TestClient(create_app(tmp_path / 'eval', source, mount_agent=False))
+    for path in ['/healthz', '/api/health', '/api/runs']:
+        assert client.get(path).status_code == 200
+    assert 'login-form' not in client.get('/').text
+    assert client.get('/api/media/..%2Fmanifest.json').status_code == 404
+    assert client.post('/api/runs', json={}).status_code == 403
+    assert client.post('/api/runs', json={}, headers={'Origin':'http://evil.invalid'}).status_code == 403
+    assert client.post('/api/runs', json={}, headers={'Origin':'http://testserver'}).status_code == 422
 
 
 def test_frozen_real_history_replay_when_fixture_supplied():

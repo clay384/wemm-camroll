@@ -92,7 +92,7 @@ def test_budget_cannot_be_redirected_and_albums_are_isolated(tmp_path, monkeypat
                                'CAMROLL_BUDGET_CNY': '300', 'CAMROLL_ALBUM_ROOT': '/old/albums'}))
     new = runtime / 'secrets.json'
     new.write_text(json.dumps({'CAMROLL_BUDGET_DB': '/wrong/new.sqlite'}))
-    for p in [old, new, runtime / 'access.key', runtime / 'judge.key']:
+    for p in [old, new, runtime / 'judge.key']:
         if not p.exists():
             p.write_text('fixture-key')
         p.chmod(0o600)

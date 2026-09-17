@@ -1,7 +1,6 @@
-"""Authenticated independent 8772 UI/API. The original 8771 service is untouched."""
+"""LAN-accessible independent 8772 UI/API. The original 8771 service is untouched."""
 from __future__ import annotations
 
-import hmac
 import json
 import os
 from pathlib import Path
@@ -14,27 +13,20 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from .common import read_secret, read_json, safe_id, now_iso
+from .common import read_json, safe_id, now_iso
 from .repository import Repository
 from .runner import Runner, configured_paths
-
-
-class LoginRequest(BaseModel):
-    access_key: str = Field(min_length=1, max_length=1024)
 
 
 class StartRequest(BaseModel):
     config: str = Field(default="M1", pattern=r"^M[1-4]$")
 
 
-def create_app(root=None, source=None, albums=None, *, access_key=None, runner_factory=Runner, mount_agent=True):
+def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mount_agent=True):
     default_root, default_source, default_albums = configured_paths()
     root, source, albums = Path(root or default_root), Path(source or default_source), Path(albums or default_albums)
-    key = access_key or read_secret("CAMROLL_EVAL_ACCESS_KEY")
     app = FastAPI(title="CamRoll × PhotoBench", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
     repo = Repository(root)
-    sessions, attempts = {}, {}
-    session_lock = threading.Lock()
     execution_lock = threading.Lock()
     active = {"runner": None, "thread": None}
     static = Path(__file__).with_name("static")
@@ -46,23 +38,10 @@ def create_app(root=None, source=None, albums=None, *, access_key=None, runner_f
         parsed = urlsplit(origin)
         return parsed.scheme in {"http", "https"} and parsed.netloc == request.headers.get("host") and not parsed.path
 
-    def authenticated(request):
-        auth = request.headers.get("authorization", "")
-        if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:], key):
-            return True
-        token = request.cookies.get("camroll_eval_session", "")
-        with session_lock:
-            expiry = sessions.get(token, 0)
-        return expiry > time.time()
-
     @app.middleware("http")
     async def guard(request, call_next):
-        path = request.url.path
         if request.method not in {"GET", "HEAD", "OPTIONS"} and not origin_ok(request):
             return JSONResponse({"error": "same_origin_required"}, status_code=403)
-        public = path in {"/", "/app.js", "/style.css", "/healthz", "/api/login"}
-        if not public and not authenticated(request):
-            return JSONResponse({"error": "authentication_required"}, status_code=401)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -73,32 +52,6 @@ def create_app(root=None, source=None, albums=None, *, access_key=None, runner_f
     @app.get("/healthz")
     def healthz():
         return {"status": "ok"}
-
-    @app.post("/api/login")
-    def login(body: LoginRequest, request: Request):
-        address = request.client.host if request.client else "unknown"
-        with session_lock:
-            recent = [t for t in attempts.get(address, []) if t > time.time() - 60]
-            if len(recent) >= 10:
-                raise HTTPException(429, "try again later")
-            if not hmac.compare_digest(body.access_key, key):
-                attempts[address] = recent + [time.time()]
-                raise HTTPException(401, "invalid access key")
-            token = secrets.token_urlsafe(32)
-            sessions[token] = time.time() + 12 * 3600
-            attempts.pop(address, None)
-        response = JSONResponse({"status": "authenticated"})
-        response.set_cookie("camroll_eval_session", token, httponly=True, samesite="strict", max_age=12 * 3600,
-                            secure=request.url.scheme == "https", path="/")
-        return response
-
-    @app.post("/api/logout")
-    def logout(request: Request):
-        with session_lock:
-            sessions.pop(request.cookies.get("camroll_eval_session", ""), None)
-        response = JSONResponse({"status": "logged_out"})
-        response.delete_cookie("camroll_eval_session")
-        return response
 
     @app.get("/")
     def index():
