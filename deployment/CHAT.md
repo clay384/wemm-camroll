@@ -1,6 +1,6 @@
 # CamRoll 相册问答页面独立部署
 
-此部署只管理 `/home/realmagic/camroll-wemm-chat` 中的 8773 进程。它不启停、重启或修改 WeMM 8765、CamRoll 8770、PhotoBench 8772，也不写入 `.153`。8773 只读访问已冻结的 355 图相册和索引；问答会通过回环地址调用 `127.0.0.1:8772/camroll/api/ask`，实际执行 Agent、WeMM 查询和 Qwen3.7-Flash 云调用，并由 8772 写入原累计预算账本。8773 不持有云密钥、不创建第二套账本、不调用 Judge。
+此部署只管理 `/home/realmagic/camroll-wemm-chat` 中的 8773 进程。它不启停、重启或修改 WeMM 8765、CamRoll 8770、PhotoBench 8772 的源码、配置和进程，也不写入 `.153`。8773 只读访问已冻结的 355 图相册和索引；问答会通过回环地址调用 `127.0.0.1:8772/camroll/api/ask`，实际执行 Agent、WeMM 查询和 Qwen3.7-Flash 云调用，并由 8772 写入原累计预算账本。8773 不持有云密钥、不创建第二套账本、不调用 Judge。
 
 页面按需求不设置登录。同源和 Host 校验用于限制浏览器请求来源，不是身份认证；任何能访问 `192.168.0.100:8773` 的局域网客户端都可能发起有费用的问答。每题可能包含多次 Qwen 调用，费用由 8772 的共享 300 元累计账本预留和结算，不确定调用保留预留。页面不自动重试，全局只允许一个在途问题，其他提交返回 429。
 
@@ -26,7 +26,8 @@ git clone --branch main /path/to/wemm-camroll-<40位提交号>.bundle \
   /home/realmagic/camroll-wemm-chat/releases/<40位提交号>
 
 install -d -m 0700 /home/realmagic/camroll-wemm-chat/runtime
-python3 -m venv /home/realmagic/camroll-wemm-chat/.venv
+python3.10 --version
+python3.10 -m venv /home/realmagic/camroll-wemm-chat/.venv
 RELEASE=/home/realmagic/camroll-wemm-chat/releases/<40位提交号>
 cd "$RELEASE"
 test "$(git rev-parse HEAD)" = "$(basename "$RELEASE")"
