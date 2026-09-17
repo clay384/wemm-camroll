@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <title>CamRoll 相册问答</title>
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#question-input">跳到提问输入框</a>
+
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="CamRoll 相册问答首页">
+      <span class="brand-mark" aria-hidden="true">C</span>
+      <span><strong>CamRoll</strong><small>相册问答</small></span>
+    </a>
+    <div class="service-state" id="service-state" role="status">
+      <span class="state-dot state-loading" aria-hidden="true"></span>
+      <span id="service-state-text">正在连接服务</span>
+    </div>
+  </header>
+
+  <div class="global-notice" id="global-notice" role="alert" hidden></div>
+
+  <main class="workspace">
+    <aside class="album-column" aria-labelledby="album-title">
+      <section class="panel album-panel">
+        <div class="section-kicker">当前相册</div>
+        <div class="album-cover" aria-hidden="true">
+          <span class="album-cover-count">355</span>
+          <span>PHOTOS</span>
+        </div>
+        <h1 id="album-title">PhotoBench album3<br>完整版（355图）</h1>
+        <p class="album-source">来源：<strong>.153 · album3-max</strong></p>
+
+        <dl class="album-facts" aria-label="相册信息">
+          <div><dt>照片</dt><dd id="album-photo-count">355 张</dd></div>
+          <div><dt>身份</dt><dd id="album-person-count">8 人</dd></div>
+          <div><dt>关系</dt><dd id="album-relation-count">6 条</dd></div>
+        </dl>
+
+        <div class="stack-list" aria-label="系统组件">
+          <div class="stack-row">
+            <span class="stack-icon stack-icon-indigo" aria-hidden="true">W</span>
+            <span><strong>WeMM</strong><small>冻结向量索引</small></span>
+            <span class="mini-state" id="index-state">检查中</span>
+          </div>
+          <div class="stack-row">
+            <span class="stack-icon stack-icon-violet" aria-hidden="true">Q</span>
+            <span><strong>Qwen3.7-Flash</strong><small>Agent 与图片复核</small></span>
+            <span class="mini-state">固定</span>
+          </div>
+          <div class="stack-row">
+            <span class="stack-icon stack-icon-green" aria-hidden="true">M4</span>
+            <span><strong>双路检索</strong><small>图片向量 + 描述</small></span>
+            <span class="mini-state">固定</span>
+          </div>
+        </div>
+
+        <div class="snapshot-note">
+          <span aria-hidden="true">◆</span>
+          <p><strong>只读冻结快照</strong><br><span id="snapshot-version">bd64fa387f0c…</span></p>
+        </div>
+      </section>
+
+      <section class="panel privacy-panel">
+        <h2>数据边界</h2>
+        <p>页面只查询现有索引，不复制相册、不重新建库，也不会把服务路径或密钥发送到浏览器。提问会调用 Qwen，并计入现有累计预算。</p>
+      </section>
+    </aside>
+
+    <section class="chat-column" aria-labelledby="chat-title">
+      <div class="chat-heading">
+        <div>
+          <div class="section-kicker">自然语言检索</div>
+          <h2 id="chat-title">问问你的相册</h2>
+        </div>
+        <span class="mode-pill">每次问题独立</span>
+      </div>
+
+      <div class="chat-history" id="chat-history" aria-live="polite">
+        <section class="welcome-card" id="welcome-card">
+          <div class="welcome-icon" aria-hidden="true">✦</div>
+          <h3>可以从时间、地点、人物或画面内容开始</h3>
+          <p>CamRoll 会检索冻结相册、调用必要工具，并用 Qwen3.7-Flash 核验图片后给出答案。</p>
+          <div class="suggestion-list" aria-label="示例问题">
+            <button type="button" class="suggestion" disabled>2019年7月在秦皇岛拍了哪些合影？</button>
+            <button type="button" class="suggestion" disabled>2023年8月6日一家人在公园和什么雕塑互动？</button>
+            <button type="button" class="suggestion" disabled>帮我找出夜间观看部落表演的照片</button>
+          </div>
+        </section>
+      </div>
+
+      <form class="composer" id="question-form">
+        <label class="sr-only" for="question-input">输入相册问题</label>
+        <textarea id="question-input" name="question" maxlength="20000" rows="2"
+          placeholder="例如：2019年7月在秦皇岛拍了哪些合影？" required disabled></textarea>
+        <div class="composer-actions">
+          <span class="composer-help" id="composer-help">Enter 发送 · Shift + Enter 换行</span>
+          <button class="send-button" id="send-button" type="submit" disabled>
+            <span>发送问题</span><span aria-hidden="true">↑</span>
+          </button>
+        </div>
+      </form>
+    </section>
+
+    <aside class="trace-column" aria-labelledby="trace-title">
+      <section class="panel trace-panel">
+        <div class="trace-heading">
+          <div>
+            <div class="section-kicker">Agent 执行轨迹</div>
+            <h2 id="trace-title">证据链与状态</h2>
+          </div>
+          <span class="trace-counter" id="trace-counter">待提问</span>
+        </div>
+        <p class="trace-intro">这里只展示可审计的工具过程和调用指标，不展示模型的隐藏思维链。</p>
+        <ol class="timeline" id="trace-timeline" aria-live="polite" aria-relevant="additions text">
+          <li class="timeline-empty" id="timeline-empty">
+            <span class="empty-orbit" aria-hidden="true"></span>
+            <p>提交问题后，这里会实时显示模型状态、工具调用和结果。</p>
+          </li>
+        </ol>
+      </section>
+    </aside>
+  </main>
+
+  <dialog class="image-dialog" id="image-dialog" aria-labelledby="image-dialog-title">
+    <div class="dialog-bar">
+      <div>
+        <span class="section-kicker">图片证据</span>
+        <h2 id="image-dialog-title">照片预览</h2>
+      </div>
+      <button type="button" class="icon-button" id="dialog-close" aria-label="关闭图片预览">×</button>
+    </div>
+    <div class="dialog-body">
+      <div class="dialog-image-wrap"><img id="dialog-image" alt=""></div>
+      <div class="dialog-meta" id="dialog-meta"></div>
+    </div>
+  </dialog>
+
+  <template id="conversation-template">
+    <article class="conversation-card">
+      <div class="user-message">
+        <span class="message-label">你</span>
+        <p class="user-question"></p>
+      </div>
+      <div class="assistant-message">
+        <div class="assistant-head">
+          <span class="assistant-avatar" aria-hidden="true">C</span>
+          <div><strong>CamRoll</strong><small>Qwen3.7-Flash · M4</small></div>
+          <span class="answer-state state-running">处理中</span>
+        </div>
+        <div class="answer-waiting"><span class="thinking-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>正在检索并核验相册证据…</span></div>
+        <div class="answer-content" hidden></div>
+        <div class="answer-error" role="alert" hidden></div>
+        <section class="evidence-section" hidden>
+          <div class="subsection-heading"><h3>图片证据</h3><span class="image-count"></span></div>
+          <div class="evidence-gallery"></div>
+        </section>
+        <details class="metrics-section" hidden>
+          <summary>模型调用与费用指标</summary>
+          <div class="metrics-summary"></div>
+          <div class="model-calls"></div>
+        </details>
+      </div>
+    </article>
+  </template>
+</body>
+</html>

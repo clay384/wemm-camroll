@@ -5,6 +5,8 @@
 - 基线标签：`baseline/2026-09-16-pre-photobench`。
 - 源码采集时间及每个来源文件的 SHA256：[`baseline/source_manifest.json`](baseline/source_manifest.json)。
 - `camroll/`：`/home/realmagic/camroll-wemm` 当前源码、测试、部署工具和项目文档。
+- `camroll/camroll-chat/`：固定 355 图相册的浅色问答页面、同源代理、安全图片读取和实时可审计轨迹。
+- `deployment/CHAT.md`：独立 8773 进程的发布、验证和回滚说明。
 - `wemm/`：`/home/realmagic/wemm-embedding-lab` 当前源码、前端、固定配置及官方来源锁；包含已部署的 `backend/camroll_internal.py`。
 - `docs/project/`：Mac 本地交接及后续设计文档的原样存档；其中旧路径和旧授权边界是历史记录，实际操作遵循最新用户授权与根目录约定。
 - `baseline/environment/`：采集时的 Python 版本与 `pip freeze`，不包含虚拟环境本体。CamRoll 的 editable 路径仅记录原部署位置，重建时使用本地 `camroll-agent` 路径。
@@ -13,7 +15,9 @@
 
 原图 EXIF 时间/GPS、离线地名、命名参考照和关系进入独立建库。CPU 人脸模型提供带来源和不确定状态的身份匹配，Qwen 生成描述和事件，WeMM 编码图片与文本，发布独立相册快照。Agent 通过 `search`、`grep`、`list_by_date`、`get`、`view_image`、`query_photo_people` 读取固定索引，支持隔离多轮会话并分别记录候选、证据和最终交付图片。详细契约见 [`docs/PHOTOBENCH_PROTOCOL.md`](docs/PHOTOBENCH_PROTOCOL.md)。
 
-`camroll/camroll-agent/camroll_eval/` 提供独立 runner、冻结的 Sentrix 评分兼容层、共享费用账本上的 Judge 调用、历史回放和带登录的比较页面。正式协议为 355 图、8 人、6 条关系、100 题／111 轮，Agent/Judge 并发 12/12。原 `.153:8771` 保持只读；新服务使用 `.100:8772`，旧 `.100:8765/8770` 保留。
+`camroll/camroll-agent/camroll_eval/` 提供独立 runner、冻结的 Sentrix 评分兼容层、共享费用账本上的 Judge 调用、历史回放和局域网直接访问的比较页面。正式协议为 355 图、8 人、6 条关系、100 题／111 轮，Agent/Judge 并发 12/12。原 `.153:8771` 保持只读；新服务使用 `.100:8772`，旧 `.100:8765/8770` 保留。
+
+相册问答数据流为 `浏览器 → 8773 → 8772 CamRoll Agent → Qwen3.7-Flash / WeMM → 冻结索引`。8773 固定相册、索引版本、M4 和模型，不持有云密钥或第二套费用账本；提问仍会产生云调用并写入 8772 的共享账本。8773 的回滚只停止自己的受控进程，不能撤销上游调用或恢复费用余额。
 
 ## 重建与恢复
 
