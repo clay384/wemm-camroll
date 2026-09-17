@@ -28,6 +28,7 @@ def main(argv=None):
     caption = commands.add_parser("repair-caption")
     caption.add_argument("parent_id")
     caption.add_argument("--repair-id", required=True)
+    caption.add_argument("--resume-preflight", action="store_true")
     args = parser.parse_args(argv)
     root, source, albums = configured_paths()
     if args.command == "repair-qa":
@@ -37,7 +38,7 @@ def main(argv=None):
         return 0
     elif args.command == "repair-caption":
         from .repair import repair_caption
-        result = repair_caption(root, albums, args.parent_id, repair_id=args.repair_id)
+        result = repair_caption(root, albums, args.parent_id, repair_id=args.repair_id, resume_preflight=args.resume_preflight)
         print(json.dumps({k: result.get(k) for k in ("repair_id", "status", "derived_index_version")}))
         return 0
     elif args.command == "serve":

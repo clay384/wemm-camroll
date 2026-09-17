@@ -147,3 +147,17 @@ def test_caption_only_adds_one_text_vector_and_keeps_events_and_original(tmp_pat
     assert derived['metadata']['text_coverage'] == 1.0
     with pytest.raises(FileExistsError): repair_caption(root, albums, 'original', repair_id='second')
     assert calls == ['caption', 'encode']
+
+
+def test_original_asset_hash_is_not_the_derived_view_hash(tmp_path):
+    from PIL import Image
+    from camroll_eval.repair import validate_photo
+    raw = tmp_path / 'original.jpg'; view = tmp_path / 'view.jpg'
+    Image.new('RGB', (12, 16), 'red').save(raw, quality=80)
+    with Image.open(raw) as image:
+        image.convert('RGB').save(view, format='JPEG', quality=95, subsampling=0)
+    row = {'asset_id': sha256(raw), 'path': str(view), 'sources': [{'source_path': str(raw)}]}
+    assert sha256(raw) != sha256(view)
+    assert validate_photo(row)['derivation_verified'] is True
+    view.write_bytes(b'tampered')
+    with pytest.raises(ValueError, match='derived'): validate_photo(row)

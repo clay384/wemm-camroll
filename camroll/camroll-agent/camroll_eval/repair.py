@@ -220,7 +220,30 @@ class RepairRunner(Runner):
         return merged
 
 
-def repair_caption(root, albums, parent_id, *, repair_id):
+def validate_photo(row):
+    """asset_id identifies the original, while row.path can be an EXIF/RGB view."""
+    import hashlib
+    import io
+    from PIL import Image, ImageOps
+    view = Path(row['path'])
+    view_hash = sha256(view)
+    if view_hash == row['asset_id']:
+        return {'source_sha256': view_hash, 'view_sha256': view_hash, 'view_is_original': True}
+    sources = row.get('sources') or []
+    source = Path(sources[0]['source_path']) if sources else view.parent / 'original.jpg'
+    if sha256(source) != row['asset_id']:
+        raise ValueError('original photo bytes changed')
+    # Verify the existing derived view in memory; never rewrite preprocessing outputs.
+    with Image.open(source) as image:
+        corrected = ImageOps.exif_transpose(image).convert('RGB')
+        buf = io.BytesIO()
+        corrected.save(buf, format='JPEG', quality=95, subsampling=0)
+    if hashlib.sha256(buf.getvalue()).hexdigest() != view_hash:
+        raise ValueError('derived photo differs from frozen preprocessing')
+    return {'source_sha256': row['asset_id'], 'view_sha256': view_hash, 'derivation_verified': True}
+
+
+def repair_caption(root, albums, parent_id, *, repair_id, resume_preflight=False):
     """Only the failed caption and its text vector; original events/vectors untouched."""
     import contextlib
     import numpy as np
@@ -247,24 +270,35 @@ def repair_caption(root, albums, parent_id, *, repair_id):
         if row.get('caption'):
             raise ValueError('original image already has a caption')
         path = Path(root) / 'caption_repairs' / safe_id(parent_id)
-        path.mkdir(parents=True, mode=0o700)  # existing attempt is never overwritten
+        if path.exists():
+            previous = read_json(path / 'repair.json')
+            if not (resume_preflight and previous.get('status') == 'failed' and
+                    not previous.get('paid_call_started', False) and
+                    previous.get('budget_before') == previous.get('budget_after') and
+                    not (path / 'calls.jsonl').exists() and not (path / 'caption.json').exists()):
+                raise FileExistsError('caption attempt exists; paid or uncertain calls cannot be retried')
+            atomic_json(path / ('preflight-failure-' + object_hash(previous)[:16] + '.json'), previous)
+        else:
+            path.mkdir(parents=True, mode=0o700)
         out = {'repair_id': safe_id(repair_id), 'parent_run_id': parent_id, 'parent_sha256': parent_hash,
             'original_index_version': version, 'image_id': row['id'], 'status': 'running',
             'created_at': now_iso(), 'core_verification': core, 'event_membership_repaired': False,
+            'paid_call_started': False,
             'note': 'Only caption/text embedding repaired; existing event membership and event vectors preserved.'}
         atomic_json(path / 'repair.json', out)
         backend = CamrollBackend()
         out['budget_before'] = backend.budget()
         if backend.embedding.fingerprint != data['metadata']['embedding_fingerprint']:
             raise ValueError('embedding fingerprint changed')
-        if sha256(Path(row['path'])) != row['asset_id']:
-            raise ValueError('original photo bytes changed')
+        out['photo_verification'] = validate_photo(row)
         _, profile, _ = _manifest(parent_path.parent / 'build_spec.json')
         def capture(call):
             append_jsonl(path / 'calls.jsonl', call)
         with contextlib.ExitStack() as stack:
             stack.enter_context(backend.qwen.capture_calls(capture))
             stack.enter_context(backend.embedding.capture_calls(capture))
+            out['paid_call_started'] = True
+            atomic_json(path / 'repair.json', out)
             value = _caption(backend.qwen, row, profile)
             atomic_json(path / 'caption.json', value)  # retained even if embedding subsequently fails
             text = (value['caption'] + '\n' + value['visible_text']).strip()
