@@ -23,6 +23,7 @@ from .runner import Runner
 
 FROZEN_REVISION = "four-88743288eb39fb9666e7881c0b2d88dd03aaa7eb"
 SUMMARY_VERSION = "http403-supplement-v1"
+ADAPTER_PROTOCOL = "http403-recovery-original-asset-binding-v2"
 
 
 def _error_403(record):
@@ -116,6 +117,32 @@ def supplement_summary(state):
         retrieval_metric_scope="fixed_supplement_subset", benchmark_e2e_latency_excluding_judge_ms=None,
         retrieval_excluded_unanswerable_count=state["qa_count"] - denominator)
     return metrics
+
+
+class _SnapshotBoundBackend:
+    """Keep frozen Agent/Library behavior while guarding the original album."""
+    def __init__(self, backend, memory, version, check_source, on_violation):
+        self._backend, self._memory, self._version = backend, Path(memory).resolve(), version
+        self._check_source = check_source
+        self._on_violation = on_violation
+
+    def __getattr__(self, name):
+        return getattr(self._backend, name)
+
+    def agent(self, memory, config):
+        try:
+            if Path(memory).resolve() != self._memory:
+                raise ValueError("Supplement queries must retain the original managed asset boundary")
+            self._check_source()
+            agent = self._backend.agent(self._memory, config)
+            library = agent.library
+            if library.version != self._version or library.memory_dir != self._memory:
+                raise ValueError("Supplement Agent changed the pinned original album binding")
+            library.image_paths(list(library.images))
+            return agent
+        except Exception:
+            self._on_violation()
+            raise
 
 
 class SupplementRunner(Runner):
@@ -240,8 +267,16 @@ class SupplementRunner(Runner):
             library = Library(original, config="M4", experiment_config=experiment)
             if library.version != version or library.metadata.get("image_embedding_count") != len(dataset.photos):
                 raise ValueError("parent vector coverage changed")
+            # Published records contain absolute managed asset paths. A copied
+            # snapshot is an audit artifact, not a relocatable runnable album.
+            # Validate every real asset before creating any paid client.
+            paths = library.image_paths(list(library.images))
+            if len(paths) != len(dataset.photos):
+                raise ValueError("parent managed asset coverage changed")
+            parent_album_hashes = file_hashes(original)
             original = {"memory": original, "snapshot": snapshot, "snapshot_hashes": snapshot_hashes,
-                        "current": pointer, "binding_sha256": binding_hash, "parent_sha256": parent_hash}
+                        "current": pointer, "binding_sha256": binding_hash, "parent_sha256": parent_hash,
+                        "album_hashes": parent_album_hashes}
             selection = {"parent_run_id": parent_id, "parent_sha256": parent_hash,
                 "qa_ids": [row["qa_id"] for row in rows], "question_count": len(rows), "planned_turn_count": turns,
                 "rule": "parent.execution_status=error AND structured call error=http_403; original scores retained",
@@ -265,10 +300,15 @@ class SupplementRunner(Runner):
             journal_path = self._path / "request-journal.sqlite"
             self._state = {"run_id": run_id, "system_id": "camroll_wemm", "mode": "supplement",
                 "view_kind": "http403_recovery_supplement", "formal_protocol": False, "status": "preparing",
-                "protocol_label": "http403-recovery-subset-reused-snapshot", "created_at": now_iso(), "started_at": now_iso(),
+                "protocol_label": ADAPTER_PROTOCOL, "created_at": now_iso(), "started_at": now_iso(),
                 "parent_run_id": parent_id, "parent_sha256": parent_hash, "parent_formal_qa_count": parent["qa_count"],
                 "parent_planned_turn_count": parent["planned_turn_count"], "index_version": version,
                 "snapshot_hashes": snapshot_hashes, "snapshot_metadata": metadata, "pinned_memory": str(memory),
+                "pinned_memory_purpose": "audit_only_snapshot_copy_not_query_album",
+                "query_memory": str(original["memory"]), "asset_binding": "original_album_assets_read_only",
+                "parent_album_manifest_sha256": object_hash(parent_album_hashes),
+                "asset_binding_validation": {"validated_image_count": len(paths), "index_version": version,
+                    "before_paid_calls": True, "policy": "Frozen Library.image_paths original memory_dir/assets boundary"},
                 "album_id": parent["album_id"], "dataset_id": parent.get("dataset_id"), "qa_set": dataset.qa_set,
                 "experiment": "W38Max", "experiment_config": experiment, "generation_request_namespace": run_id,
                 "request_journal_path": str(journal_path), "core_verification": core,
@@ -281,19 +321,27 @@ class SupplementRunner(Runner):
                 "metric_source": parent["metric_source"], "phases": {"qa_eval": {}}, "build_skipped": True,
                 "cache_mode": "reused_parent_snapshot_fresh_queries", "query_cache_policy": "fresh_clients_no_parent_cache",
                 "selection_sha256": selection_hash, "hardware_context": copy.deepcopy(parent.get("hardware_context", {})),
-                "note": "Separate recovery measurement; no first-run records or scores are replaced and no album is rebuilt."}
+                "note": "Separate recovery measurement; original album is queried read-only with its managed asset boundary intact. The copied snapshot is audit-only. No first-run records or scores are replaced and no album is rebuilt. Full album hash guards add local verification time; timing is not comparable with cold runs."}
             writable = True
             atomic_json(self._path / "selection.json", selection)
             atomic_json(self._path / "questions.json", rows)
             atomic_json(self._path / "input_integrity.json", integrity)
             atomic_json(self._path / "media_mapping.json", media)
+            atomic_json(self._path / "parent_album_hashes.json", parent_album_hashes)
             self._save()
             judge = self.judge_factory(cancel=self.cancel, on_call=self._judge_call, request_namespace=run_id,
                 request_journal_path=journal_path, expected_limit_cny=600)
             if judge.protocol() != parent["judge_protocol"]:
                 raise ValueError("supplement Judge protocol changed")
             self._state.update(judge_protocol=judge.protocol(), judge_model=parent["judge_model"])
-            self._backend = self.backend_factory(experiment_config=experiment, run_id=run_id, journal_path=journal_path)
+            backend = self.backend_factory(experiment_config=experiment, run_id=run_id, journal_path=journal_path)
+            def check_source():
+                if (file_hashes(original["memory"]) != original["album_hashes"]
+                        or sha256(parent_path) != parent_hash):
+                    self._block("snapshot_integrity_changed", cancel_paid=True)
+                    raise ValueError("original album or parent run changed before question submission")
+            self._backend = _SnapshotBoundBackend(backend, original["memory"], version, check_source,
+                lambda: self._block("snapshot_integrity_changed", cancel_paid=True))
             self._state["budget_before"] = self._backend.budget()
             if self.sample_resources:
                 from .telemetry import ResourceSampler
@@ -317,7 +365,7 @@ class SupplementRunner(Runner):
                         break
                     # Exactly one Agent QA is in flight. No previous answer,
                     # context, score, or query cache is passed as prior.
-                    item = self._evaluate(row, self._backend, memory, version, "M4", media, run_id)
+                    item = self._evaluate(row, self._backend, original["memory"], version, "M4", media, run_id)
                     item["supplement_provenance"] = {"parent_run_id": parent_id, "supplement_run_id": run_id,
                         "original_item_sha256": object_hash(chosen[row["qa_id"]]), "snapshot_version": version}
                     self._item(item)
@@ -383,12 +431,16 @@ class SupplementRunner(Runner):
                             and file_hashes(original["snapshot"]) == original["snapshot_hashes"]
                             and (original["memory"] / "CURRENT").read_bytes() == original["current"]
                             and sha256(original["memory"] / "experiment.json") == original["binding_sha256"])
+                        self._state["parent_album_unchanged"] = file_hashes(original["memory"]) == original["album_hashes"]
+                        self._state["source_unchanged"] = self._state["source_unchanged"] and self._state["parent_album_unchanged"]
                         self._state["pinned_snapshot_unchanged"] = file_hashes(memory / "snapshots" / version) == snapshot_hashes
                     except Exception as exc:
                         self._state["source_unchanged"] = self._state["pinned_snapshot_unchanged"] = None
+                        self._state["parent_album_unchanged"] = None
                         self._state.setdefault("finalization_errors", []).append(
                             {"phase": "snapshot_integrity", "type": type(exc).__name__})
-                    if self._state.get("source_unchanged") is not True or self._state.get("pinned_snapshot_unchanged") is not True:
+                    if (self._state.get("source_unchanged") is not True or self._state.get("pinned_snapshot_unchanged") is not True
+                            or self._state.get("parent_album_unchanged") is not True):
                         self._block("snapshot_integrity_changed", cancel_paid=True)
                         self._state.update(status="failed", supplement_complete=False)
                     elif self._state.get("finalization_errors"):

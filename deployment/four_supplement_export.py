@@ -72,6 +72,14 @@ def export(runtime_root, run_id, *, ledger_path=None, report_url='http://192.168
         'calls_and_tokens': _usage(calls), 'cost_audit': audit, 'sampled_resources': state.get('resource_summary'),
         'restoration': restoration, 'questions': questions, 'run_json': str(run_path), 'private_artifact': True}
     output = runtime / 'reports' / run_id
+    validity_path = runtime / 'evaluation/supplement-validity-audit.json'
+    if validity_path.is_file():
+        validity = (read_json(validity_path).get('runs') or {}).get(run_id)
+        if isinstance(validity, dict):
+            report['validity_audit'] = validity
+            if validity.get('valid') is False:
+                report['acceptance_complete'] = False
+                report['title'] = 'W38Max 补测实施无效 · 仅故障存证 · 不用于模型比较'
     atomic_json(output.with_suffix('.json'), report)
     overlay_path = runtime / 'evaluation/supplement-cost-audit.json'
     overlay = read_json(overlay_path) if overlay_path.exists() else {'runs': {}}
@@ -89,6 +97,9 @@ def export(runtime_root, run_id, *, ledger_path=None, report_url='http://192.168
         '| 题号 | 执行轮次/计划 | 执行状态 | 评分状态 | 最终分数 |', '|---|---|---|---|---|']
     for q in questions:
         lines.append(f"| [{q['qa_id']}]({q['full_record_url']}) | {q['executed_turn_count']}/{q['planned_turn_count']} | {q['execution_status']} | {q['judge_status']} | {q['score'] if q['score'] is not None else '未评分'} |")
+    if report.get('validity_audit', {}).get('valid') is False:
+        lines[2:2] = ['**实施无效，不用于模型比较；下列答案、评分与费用仅作故障存证。**', '',
+                       report['validity_audit'].get('reason', 'Implementation validity audit failed.'), '']
     path=output.with_suffix('.md'); tmp=path.with_suffix('.md.tmp');tmp.write_text('\n'.join(lines)+'\n');tmp.chmod(0o600);tmp.replace(path)
     return report
 

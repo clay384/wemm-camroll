@@ -42,6 +42,11 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
                 value = (audit.get('runs') or {}).get(state.get('run_id'))
                 if isinstance(value, dict):
                     state = {**state, 'cost_audit': value}
+        validity_path = root / 'supplement-validity-audit.json'
+        if state.get('mode') == 'supplement' and validity_path.is_file():
+            value = (read_json(validity_path).get('runs') or {}).get(state.get('run_id'))
+            if isinstance(value, dict):
+                state = {**state, 'validity_audit': value}
         return state
 
     def origin_ok(request):

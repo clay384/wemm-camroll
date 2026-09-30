@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 from pathlib import Path
+import shutil
 
 import numpy as np
 import pytest
@@ -57,8 +59,13 @@ def frozen_parent(tmp_path, source, monkeypatch):
     dataset = Dataset(source, strict=False)
     configuration = {**get_experiment_profile("W38Max").as_dict(), "cache_namespace": parent_id}
     profile = get_experiment_profile("W38Max").with_fingerprints(embedding_fingerprint="synthetic-wemm-fingerprint")
+    memory = albums / album_id
+    (memory / "assets").mkdir(parents=True)
+    from PIL import Image
+    for path in dataset.photos:
+        Image.new("RGB", (4, 4), color="red").save(memory / "assets" / path.name, format="JPEG")
     images = [{"id": "img_" + sha256(path), "asset_id": sha256(path), "kind": "image",
-               "filename": path.name, "path": str(path), "source_path": str(path),
+               "filename": path.name, "path": str(memory / "assets" / path.name), "source_path": str(path),
                "caption": "Synthetic frozen caption", "visible_text": "", "event_id": None}
               for path in dataset.photos]
     vectors = np.zeros((len(images), 4096), dtype=np.float32)
@@ -134,12 +141,15 @@ class SupplementBackend:
         raise AssertionError("A supplement must never cold-build or change the parent album")
 
     def agent(self, memory, config):
+        from camroll_agent.library import Library
         memory = Path(memory)
         self.agent_memories.append((memory, config))
         version = (memory / "CURRENT").read_text().strip()
         ids = [row["id"] for row in read_json(memory / "snapshots" / version / "records.json")["images"]]
         backend = self
+        bound_library = Library(memory, config=config, experiment_config=self.options[-1]["experiment_config"])
         class Agent:
+            library = bound_library
             def ask(self, question, history=None, **kwargs):
                 backend.questions.append({"question": question, "history": copy.deepcopy(history),
                                           "request_context": kwargs.get("request_context")})
@@ -190,6 +200,136 @@ def run_synthetic(fixture, backend=None, *, run_id="supplement-one", judge_type=
     return result, backend, judges
 
 
+class RealAgentVisionBackend(SupplementBackend):
+    """Real backend/Library/Agent/tools, replacing only the cloud transport."""
+    def __init__(self, image_id):
+        super().__init__()
+        self.image_id = image_id
+        self.reranker = None
+        self.vision_calls, self.chat_calls = [], 0
+        self.query_calls = []
+        backend = self
+        class Embedding:
+            provider, dimension = "wemm", 4096
+            fingerprint = "synthetic-wemm-fingerprint"
+            def encode(self, *, text, role):
+                backend.query_calls.append({"text": text, "role": role})
+                vector = np.zeros(4096, dtype=np.float32)
+                vector[0] = 1
+                return vector
+        self.embedding = Embedding()
+        class Cloud:
+            model = "qwen3.8-max"
+            def chat(self, messages, tools=None, role="agent"):
+                backend.chat_calls += 1
+                stage = (backend.chat_calls - 1) % 3
+                if stage == 2:
+                    return {"role": "assistant", "content": json.dumps({"outcome": "answer",
+                        "answer": "Synthetic image evidence", "selected_image_ids": [image_id]})}
+                name = "search" if stage == 0 else "view_image"
+                args = {"query": "Synthetic photo"} if stage == 0 else {"image_ids": [image_id], "prompt": "Describe synthetic photo"}
+                return {"role": "assistant", "content": None, "tool_calls": [{"id": "call-" + str(backend.chat_calls),
+                    "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]}
+            def generate_json(self, prompt, image_paths, schema, role="view", max_attempts=3):
+                from PIL import Image
+                for path in image_paths:
+                    with Image.open(path) as image:
+                        image.load()
+                backend.vision_calls.append({"role": role, "paths": image_paths})
+                if role == "final":
+                    return {"answer": "Synthetic reviewed evidence", "evidence_image_ids": [image_id]}
+                return {"analysis": "Synthetic photo", "evidence": [{"image_id": image_id,
+                    "observation": "Synthetic visible content"}], "limitations": ""}
+        self.qwen = Cloud()
+
+    def factory(self, **options):
+        self.experiment_config = options["experiment_config"]
+        return super().factory(**options)
+
+    def agent(self, memory, config):
+        from camroll_eval.runner import CamrollBackend
+        self.agent_memories.append((Path(memory), config))
+        return CamrollBackend.agent(self, memory, config)
+
+
+def test_real_backend_view_and_final_review_keep_original_asset_binding(frozen_parent):
+    before = tree_hashes(frozen_parent["memory"])
+    backend = RealAgentVisionBackend(frozen_parent["images"][0]["id"])
+    result, backend, _ = run_synthetic(frozen_parent, backend)
+    assert [call["role"] for call in backend.vision_calls] == ["view", "final"] * 3
+    assert [call["role"] for call in backend.query_calls] == ["query"] * 3
+    assert all(Path(path).is_relative_to(frozen_parent["memory"] / "assets")
+               for call in backend.vision_calls for path in call["paths"])
+    assert all(item["execution_status"] == "complete" for item in result["items"])
+    assert all(turn["termination_reason"] == "ok" for item in result["items"] for turn in item["runtime_turns"])
+    assert tree_hashes(frozen_parent["memory"]) == before
+    assert result["parent_album_unchanged"] is True
+    assert result["asset_binding_validation"]["validated_image_count"] == 2
+    assert result["pinned_memory_purpose"] == "audit_only_snapshot_copy_not_query_album"
+    manifest_path = frozen_parent["root"] / "runs" / result["run_id"] / "parent_album_hashes.json"
+    assert read_json(manifest_path) == before
+
+
+def test_original_assets_and_client_work_but_relocated_snapshot_fails_boundary(frozen_parent, tmp_path):
+    image_id = frozen_parent["images"][0]["id"]
+    backend = RealAgentVisionBackend(image_id)
+    backend.factory(experiment_config=frozen_parent["parent"]["experiment_config"])
+    original_agent = backend.agent(frozen_parent["memory"], "M4")
+    assert original_agent.library.image_paths([image_id])
+    response = original_agent.ask("Describe synthetic image", structured_output=True)
+    assert response.stopped_reason == "ok", response.tool_trace
+    assert [call["role"] for call in backend.vision_calls] == ["view", "final"]
+    relocated = tmp_path / "audit-only-copy"
+    shutil.copytree(frozen_parent["memory"] / "snapshots", relocated / "snapshots")
+    shutil.copyfile(frozen_parent["memory"] / "CURRENT", relocated / "CURRENT")
+    relocated_agent = backend.agent(relocated, "M4")
+    # Merely adding a symlink to the original assets does not make the
+    # original absolute record paths children of the new album boundary.
+    (relocated / "assets").symlink_to(frozen_parent["memory"] / "assets", target_is_directory=True)
+    with pytest.raises(ValueError, match="Managed image is unavailable"):
+        relocated_agent.library.image_paths([image_id])
+
+
+@pytest.mark.parametrize("invalid", ["missing_asset", "outside_asset"])
+def test_every_original_asset_is_validated_before_creating_paid_clients(frozen_parent, tmp_path, invalid):
+    path = frozen_parent["memory"] / "snapshots" / frozen_parent["version"] / "records.json"
+    payload = read_json(path)
+    row = payload["images"][-1]
+    if invalid == "missing_asset":
+        Path(row["path"]).unlink()
+    else:
+        outside = tmp_path / "valid-but-outside.jpg"
+        shutil.copyfile(row["path"], outside)
+        row["path"] = str(outside)
+        atomic_json(path, payload)
+    backend = SupplementBackend()
+    with pytest.raises(ValueError, match="Managed image is unavailable"):
+        run_synthetic(frozen_parent, backend)
+    assert backend.options == []
+    assert not (frozen_parent["root"] / "runs" / "supplement-one").exists()
+
+
+@pytest.mark.parametrize("changed", ["state.sqlite", "assets/a.jpg"])
+def test_parent_album_change_blocks_later_paid_questions_and_fails_integrity(frozen_parent, changed):
+    class MutatingBackend(SupplementBackend):
+        def agent(self, memory, config):
+            agent = super().agent(memory, config)
+            original_ask = agent.ask
+            def ask(*args, **kwargs):
+                result = original_ask(*args, **kwargs)
+                (Path(memory) / changed).write_bytes(b"Synthetic forbidden mutation")
+                return result
+            agent.ask = ask
+            return agent
+    result, backend, _ = run_synthetic(frozen_parent, MutatingBackend())
+    assert len(backend.questions) == 1
+    assert result["source_unchanged"] is False
+    assert result["parent_album_unchanged"] is False
+    assert result["status"] == "failed"
+    assert result["stop_reason"] == "snapshot_integrity_changed"
+    assert result["supplement_complete"] is False
+
+
 def test_supplement_is_separate_immutable_snapshot_reuse_with_fresh_dialogue(frozen_parent):
     parent_bytes = frozen_parent["parent_path"].read_bytes()
     before = tree_hashes(frozen_parent["memory"])
@@ -218,11 +358,12 @@ def test_supplement_is_separate_immutable_snapshot_reuse_with_fresh_dialogue(fro
     assert all(Path(judge.options["request_journal_path"]) == Path(backend.options[0]["journal_path"]) for judge in judges)
     assert backend.options[0]["experiment_config"]["cache_namespace"] == "original-w38max"
     for memory, config in backend.agent_memories:
-        assert memory != frozen_parent["memory"] and config == "M4"
-        assert memory == Path(result["pinned_memory"])
-        assert not (memory / "state.sqlite").exists()
+        assert memory == frozen_parent["memory"] and config == "M4"
+        assert memory == Path(result["query_memory"])
+        pinned = Path(result["pinned_memory"])
+        assert pinned != memory and not (pinned / "state.sqlite").exists()
         assert (memory / "CURRENT").read_text().strip() == frozen_parent["version"]
-        assert (memory / "snapshots" / frozen_parent["version"] / "records.json").read_bytes() == (
+        assert (pinned / "snapshots" / frozen_parent["version"] / "records.json").read_bytes() == (
             frozen_parent["memory"] / "snapshots" / frozen_parent["version"] / "records.json").read_bytes()
     assert frozen_parent["parent_path"].read_bytes() == parent_bytes
     assert tree_hashes(frozen_parent["memory"]) == before

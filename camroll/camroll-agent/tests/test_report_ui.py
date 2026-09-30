@@ -9,6 +9,22 @@ import pytest
 SCRIPT = Path(__file__).parents[1] / "camroll_eval/static/app.js"
 
 
+def test_invalid_supplement_is_evidence_only_and_explains_asset_failure():
+    result = evaluate("""(()=>{
+      const run={run_id:'invalid-run',mode:'supplement',status:'blocked',qa_count:64,
+        planned_turn_count:71,planned_eligible_qa_count:52,experiment:'W38Max',
+        validity_audit:{valid:false,reason:'图片路径边界失败 <unsafe>'},
+        summary:{completed:51,judge_valid_count:49,quality_correct_planned_rate:.59}};
+      state.runs=[run]; renderRuns();
+      return {list:$('#run-list').innerHTML,notice:supplementNotice(run)};
+    })()""")
+    assert '实施无效' in result['list']
+    assert '仅存证' in result['list']
+    assert '不用于模型比较' in result['notice']
+    assert '图片路径边界失败 &lt;unsafe&gt;' in result['notice']
+    assert '59.0%' not in result['list']
+
+
 def evaluate(expression):
     node = shutil.which("node")
     if node is None:

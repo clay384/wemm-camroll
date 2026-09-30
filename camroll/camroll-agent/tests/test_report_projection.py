@@ -288,3 +288,18 @@ def test_supplement_cost_sidecar_overlays_only_supplement_without_rewriting_firs
     assert client.get("/api/runs/supplement-64/export").content == before
     assert path.read_bytes() == before
     assert audit_path.read_bytes() == original_audit
+
+
+def test_invalid_supplement_annotation_preserves_raw_export_and_original_runs(report):
+    _, path = supplement_report(report)
+    before = path.read_bytes()
+    audit = {'valid': False, 'reason': 'Asset boundary mismatch', 'code': 'asset_binding_failure'}
+    atomic_json(report['root'] / 'supplement-validity-audit.json', {'runs': {
+        'supplement-64': audit, 'synthetic-run': audit}})
+    client = report['client']
+    rows = {row['run_id']: row for row in client.get('/api/runs').json()['runs']}
+    assert rows['supplement-64']['validity_audit'] == audit
+    assert 'validity_audit' not in rows['synthetic-run']
+    assert client.get('/api/runs/supplement-64').json()['validity_audit'] == audit
+    assert client.get('/api/runs/supplement-64/export').content == before
+    assert path.read_bytes() == before
