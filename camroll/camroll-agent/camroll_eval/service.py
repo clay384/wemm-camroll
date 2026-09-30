@@ -114,20 +114,9 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
     @app.get("/api/runs/{run_id}")
     def run(run_id: str):
         try:
-            state = repo.load(run_id)
+            result = with_cost_audit(repo.detail(run_id))
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, "run not found") from None
-        result = with_cost_audit({key: value for key, value in state.items() if key not in {"items", "media_mapping", "qa_ids"}})
-        result["items"] = [{key: row.get(key) for key in ("qa_id", "question", "answer", "task_type", "angle", "difficulty",
-                           "answerability", "execution_status", "judge_status", "judge", "retrieval_precision",
-                           "retrieval_recall", "retrieval_f1", "agent_status", "wall_clock_ms")}
-                           for row in state.get("items", [])]
-        present = {row["qa_id"] for row in result["items"]}
-        result["items"].extend({**row, "judge": {"score": None, "reason": "not_started"}}
-                                for row in state.get("planned_status", []) if row["qa_id"] not in present)
-        for row in result["items"]:
-            judge = row.get("judge") or {}
-            row["judge"] = {key: judge.get(key) for key in ("score", "reason", "judge_status")}
         progress = repo.path(run_id).parent / "progress.json"
         if progress.is_file():
             result["live_progress"] = read_json(progress)
@@ -136,16 +125,23 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
     @app.get("/api/runs/{run_id}/items/{qa_id}")
     def item(run_id: str, qa_id: str):
         try:
-            state = repo.load(run_id)
+            return repo.item(run_id, qa_id)
         except (FileNotFoundError, ValueError):
-            raise HTTPException(404, "run not found") from None
-        value = next((row for row in state.get("items", []) if row.get("qa_id") == qa_id), None)
-        if value is None:
-            planned = next((row for row in state.get("planned_status", []) if row["qa_id"] == qa_id), None)
-            if planned:
-                return {**planned, "answer": "", "judge": {"score": None, "reason": "not_started"}, "runtime_turns": []}
             raise HTTPException(404, "item not found")
-        return value
+
+    @app.get("/api/runs/{run_id}/items/{qa_id}/view")
+    def item_view(run_id: str, qa_id: str):
+        try:
+            return repo.item(run_id, qa_id, light=True)
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(404, "item not found") from None
+
+    @app.get("/api/runs/{run_id}/items/{qa_id}/trace/{kind}/{index}")
+    def item_trace(run_id: str, qa_id: str, kind: str, index: str):
+        try:
+            return repo.item_trace(run_id, qa_id, kind, int(index))
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(404, "trace not found") from None
 
     @app.get("/api/runs/{run_id}/export")
     def export(run_id: str):
@@ -158,7 +154,7 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
     @app.get("/api/runs/{run_id}/resources")
     def resources(run_id: str):
         try:
-            state = repo.load(run_id)
+            state = repo.get_brief(run_id)
             resource_id = state.get("parent_run_id") if state.get("mode") == "composite" else run_id
             directory = repo.path(resource_id).parent
         except (FileNotFoundError, ValueError):
@@ -181,7 +177,7 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
     @app.get("/api/runs/{run_id}/pipeline-calls")
     def pipeline_calls(run_id: str):
         try:
-            state = repo.load(run_id)
+            state = repo.get_brief(run_id)
             safe_id(state.get("album_id"))
         except (FileNotFoundError, ValueError, TypeError):
             raise HTTPException(404, "run not found") from None

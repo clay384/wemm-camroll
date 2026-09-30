@@ -140,3 +140,76 @@ def test_absent_cost_audit_never_falls_back_to_shared_ledger_delta():
               noCalls:runCostLabel({cost_audit:{status:'no_recorded_calls',own_estimated_cny:0,missing_call_ids:[]}})};
     })()""")
     assert result == {"cost": None, "shared": 20, "label": "待归属审计", "noCalls": "暂无已记录调用"}
+
+
+def test_item_initial_view_requests_only_light_projection_and_defers_trace_dom():
+    result = evaluate("""(async()=>{
+      const requests=[];
+      fetch=async path=>{requests.push(path);return {ok:true,json:async()=>({
+        qa_id:'qa-one',question:'Synthetic',answer:'Answer',judge:{score:2,reason:'valid'},
+        runtime_turns:[{message:'turn',answer:'turn answer',error_type:'example_error'}],
+        model_call_metrics:[{trace_index:0,call_type:'agent',input:'DEFERRED_LARGE_PAYLOAD'}],
+        tool_trace:[{trace_index:0,tool:'search',result:{hidden:'DEFERRED_TOOL_PAYLOAD'}}]
+      })};};
+      await openItem('run-one','qa-one');
+      return {requests,html:$('#item-content').innerHTML,open:$('#item-dialog').open};
+    })()""")
+    assert result["requests"] == ["/api/runs/run-one/items/qa-one/view"]
+    assert result["open"] is True
+    assert "Answer" in result["html"] and "example_error" in result["html"]
+    assert 'data-trace-kind="model"' in result["html"] and 'data-trace-kind="tool"' in result["html"]
+    assert "DEFERRED_LARGE_PAYLOAD" not in result["html"] and "DEFERRED_TOOL_PAYLOAD" not in result["html"]
+    assert 'href="/api/runs/run-one/items/qa-one" download=' in result["html"]
+
+
+def test_trace_fetches_once_when_opened_and_renders_escaped_input_and_search_ranks():
+    result = evaluate("""(async()=>{
+      const requests=[],body={};
+      fetch=async path=>{requests.push(path);return {ok:true,json:async()=>({
+        tool:'search',args:{query:'<script>unsafe</script>'},result:{retrieval_trace:{images:{
+          candidate_count:1,reranked_count:1,candidates:[{id:'img_one',recall_rank:2,final_rank:1,reranked:true,rerank_score:.9}]
+        }}}
+      })};};
+      const details={open:false,dataset:{traceKind:'tool',traceIndex:'3'},querySelector:()=>body};
+      await loadTrace(details,'/api/runs/run/items/qa');
+      const closedRequests=requests.length;
+      details.open=true;await loadTrace(details,'/api/runs/run/items/qa');
+      await loadTrace(details,'/api/runs/run/items/qa');
+      return {closedRequests,requests,loaded:details.dataset.loaded,html:body.innerHTML};
+    })()""")
+    assert result["closedRequests"] == 0
+    assert result["requests"] == ["/api/runs/run/items/qa/trace/tool/3"]
+    assert result["loaded"] == "true"
+    assert "召回排名" in result["html"] and "img_one" in result["html"]
+    assert "&lt;script&gt;unsafe&lt;/script&gt;" in result["html"] and "<script>" not in result["html"]
+
+
+def test_trace_error_does_not_mark_loaded_and_can_be_retried():
+    result = evaluate("""(async()=>{
+      const body={},details={open:true,dataset:{traceKind:'model',traceIndex:'0'},querySelector:()=>body};
+      let calls=0;
+      fetch=async()=>{calls++;return {ok:calls>1,json:async()=>calls===1?{detail:'temporary'}:{input:'retried'}};};
+      await loadTrace(details,'/base');
+      const first={loaded:details.dataset.loaded??null,message:body.textContent};
+      await loadTrace(details,'/base');
+      return {calls,first,loaded:details.dataset.loaded,html:body.innerHTML};
+    })()""")
+    assert result["first"]["loaded"] is None and "temporary" in result["first"]["message"]
+    assert result["calls"] == 2 and result["loaded"] == "true"
+    assert "retried" in result["html"]
+
+
+def test_resource_labels_separate_whole_gpu_from_verified_run_processes():
+    result = evaluate("""(()=>{
+      const run={run_id:'run',experiment:'Q38',experiment_config:{embedding_backend:'qwen'},
+        qa_count:100,planned_turn_count:111,summary:{},items:[],
+        resource_summary:{gpu_memory_mib_peak:21377,qwen_process_memory_mib_peak:5020,samples:7767}};
+      state.currentData=run;renderDetail(run);renderComparison({runs:[run],rows:[],warning:'test'});
+      return {detail:$('#detail').innerHTML,comparison:$('#comparison').innerHTML};
+    })()""")
+    for html in result.values():
+        assert "GPU 1整卡采样峰值（含其他进程）" in html
+        assert "本轮已核验模型进程采样峰值" in html
+        assert "5,020 MiB" in html
+    assert "不能视为本轮独占资源" in result["detail"]
+    assert "仅统计本轮身份核验通过的进程" in result["detail"]
