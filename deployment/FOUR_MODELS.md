@@ -23,3 +23,5 @@ python deployment/four_gpu_window.py restore --window-id WINDOW_ID
 ```
 
 不复用历史PID，不向GPU0发送控制指令。`four_report.py`直接绑定8774；端口占用立即退出。报告不加载凭据、不挂Agent或评测写接口，可独立于GPU长期运行。预留/未知请求须查原账本与request-journal.sqlite；不得删库、清预留或降低已消费金额来“恢复”。
+
+报告可使用独立 `releases/report-<git SHA>`，不得覆盖正在执行的冻结 `four-<git SHA>`。`python deployment/four_export.py` 只读读取结果和原共享账本，生成私有 `reports/four-models.json`、`.md` 及 `evaluation/cost-audit.json`；`--smoke` 导出合成小样。费用按本run独立相册的全部建库轨迹、问答轨迹、Judge轨迹的唯一请求ID归属，另列共享账本同期增量，避免其他项目并发消费混算。未完整轨迹、缺失ID或不可用账本保留未知总额和已知小计。报告页读取费用审计覆盖层，不改写冻结run.json。实际套餐账单不可用时不将等价估算标为实付。

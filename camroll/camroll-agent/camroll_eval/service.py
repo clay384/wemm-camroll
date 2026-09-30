@@ -31,6 +31,16 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
     active = {"runner": None, "thread": None}
     static = Path(__file__).with_name("static")
 
+    def with_cost_audit(state):
+        # Report-only overlay: preserve immutable evaluator run.json bytes.
+        path = root / 'cost-audit.json'
+        if path.is_file():
+            audit = read_json(path)
+            value = (audit.get('runs') or {}).get(state.get('run_id'))
+            if isinstance(value, dict):
+                state = {**state, 'cost_audit': value}
+        return state
+
     def origin_ok(request):
         origin = request.headers.get("origin")
         if not origin:
@@ -82,7 +92,7 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
 
     @app.get("/api/runs")
     def runs():
-        return {"runs": repo.list()}
+        return {"runs": [with_cost_audit(state) for state in repo.list()]}
 
     @app.get("/api/comparison-profile")
     def comparison_profile():
@@ -95,7 +105,9 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
         if not 1 <= len(values) <= 6:
             raise HTTPException(422, "select one to six runs")
         try:
-            return repo.compare(values)
+            result = repo.compare(values)
+            result['runs'] = [with_cost_audit(state) for state in result['runs']]
+            return result
         except (FileNotFoundError, ValueError):
             raise HTTPException(404, "run not found") from None
 
@@ -105,7 +117,7 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
             state = repo.load(run_id)
         except (ValueError, FileNotFoundError):
             raise HTTPException(404, "run not found") from None
-        result = {key: value for key, value in state.items() if key not in {"items", "media_mapping", "qa_ids"}}
+        result = with_cost_audit({key: value for key, value in state.items() if key not in {"items", "media_mapping", "qa_ids"}})
         result["items"] = [{key: row.get(key) for key in ("qa_id", "question", "answer", "task_type", "angle", "difficulty",
                            "answerability", "execution_status", "judge_status", "judge", "retrieval_precision",
                            "retrieval_recall", "retrieval_f1", "agent_status", "wall_clock_ms")}
