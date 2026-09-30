@@ -226,25 +226,21 @@ def test_unexecuted_final_turn_never_uses_clarification_quality():
     assert result['unexecuted_turn_count'] == 1
 
 
-def test_judge_retries_account_each_uncertain_call(tmp_path):
+def test_judge_uncertain_call_stops_without_automatic_resend(tmp_path):
     ledger = BudgetLedger(tmp_path / 'budget.sqlite')
     attempts = []
-    class NoWait:
-        def wait(self, delay):
-            return False
-        def is_set(self):
-            return False
     def transport(payload):
         attempts.append(payload)
         if len(attempts) < 3:
             raise TimeoutError()
         return {'choices': [{'message': {'content': '{"score":2,"reason":"correct"}'}}],
                 'usage': {'prompt_tokens': 100, 'completion_tokens': 10}}
-    judge = Judge(transport=transport, ledger=ledger, cancel=NoWait(), interval=0)
+    judge = Judge(transport=transport, ledger=ledger, interval=0)
     result = judge._judge('q', 'a', 'a')
-    assert result['score'] == 2
-    assert ledger.summary()['requests'] == 3 and ledger.summary()['uncertain_requests'] == 2
-    assert ledger.summary()['estimated_spent_cny'] == pytest.approx(.000288)
+    assert result['score'] is None
+    assert ledger.summary()['requests'] == 1 and ledger.summary()['uncertain_requests'] == 1
+    assert ledger.summary()['estimated_spent_cny'] == 0
+    assert judge.stop_reason == 'request_uncertain'
 
 
 def test_explicit_rejection_releases_budget_and_missing_usage_retains_it(tmp_path):

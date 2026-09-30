@@ -48,7 +48,8 @@ class Repository:
                 "formal_protocol", "protocol_label", "view_kind", "parent_run_id", "repair_run_id",
                 "repair_qa_ids", "repair_wall_ms", "repair_budget_before", "repair_budget_after",
                 "repaired_valid_count", "attempted_turn_count_total", "budget_before", "budget_after", "phases",
-                "index_version", "summary", "resource_summary", "code_revision", "fatal_error")
+                "index_version", "summary", "resource_summary", "code_revision", "fatal_error",
+                'experiment', 'experiment_config', 'hardware_context', 'build_summary')
         return {key: state.get(key) for key in keys if key in state}
 
     def list(self):
@@ -111,12 +112,13 @@ class Repository:
             return {"runs": [], "rows": []}
         if any(state.get("formal_protocol") is False for state in states):
             raise ValueError("smoke runs are excluded from formal comparisons")
-        qa_ids = list(dict.fromkeys(row["qa_id"] for state in states for row in state.get("items", [])))
+        qa_ids = list(dict.fromkeys(row["qa_id"] for state in states for row in (state.get("qa_plan") or state.get("items", []))))
+        plans = {row['qa_id']: row for state in states for row in state.get('qa_plan', [])}
         maps = [{row["qa_id"]: row for row in state.get("items", [])} for state in states]
         rows = []
         for qa_id in qa_ids:
             observations = [mapping.get(qa_id) for mapping in maps]
-            first = next(row for row in observations if row)
+            first = next((row for row in observations if row), plans.get(qa_id, {}))
             rows.append({"qa_id": qa_id, "question": first.get("question"), "results": [
                 {"run_id": state["run_id"], "score": (row.get("judge") or {}).get("score") if row else None,
                  "recall": row.get("retrieval_recall") if row else None,
@@ -126,8 +128,9 @@ class Repository:
                 for state, row in zip(states, observations)]})
         qa_hashes = {state.get("input_integrity", {}).get("qa_sha256") for state in states}
         dataset_hashes = {state.get("input_integrity", {}).get("dataset_sha256") for state in states}
+        contemporary = all(state.get('experiment_config') for state in states)
         return {"runs": [self.brief(state) for state in states], "rows": rows,
                 "same_qa_hash": len(qa_hashes) == 1 and None not in qa_hashes,
                 "same_dataset_hash": len(dataset_hashes) == 1 and None not in dataset_hashes,
-                "comparison_scope": "historical_system_comparison",
-                "warning": "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。"}
+                "comparison_scope": "contemporary_full_system_comparison" if contemporary else "historical_system_comparison",
+                "warning": "同期 M4 完整系统比较；不能单独归因于 embedding 或 reranker。" if contemporary else "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。"}

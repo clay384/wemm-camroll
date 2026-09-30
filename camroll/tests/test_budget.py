@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from camroll_agent.budget import BudgetExceeded, BudgetLedger
+from camroll_agent.budget import BudgetExceeded, BudgetLedger, BudgetLimitChanged, RequestJournal, RequestReplayError, RequestUncertain
 
 
 def _reserve_in_process(path):
@@ -68,7 +68,76 @@ def test_ledger_reopen_does_not_reset_or_increase_budget(tmp_path):
     with pytest.raises(BudgetExceeded):
         second.reserve(0.2)
     with pytest.raises(ValueError):
-        BudgetLedger(path, limit_cny=301)
+        BudgetLedger(path, limit_cny=601)
+
+
+def test_explicit_raise_retains_spending_and_reopen_never_changes_cap(tmp_path):
+    path = tmp_path / "budget.sqlite"
+    ledger = BudgetLedger(path)
+    charge = ledger.reserve(20)
+    ledger.finish(charge, 19.62)
+    audit = ledger.raise_limit(600, expected_previous_cny=300, reason="Authorized four-group benchmark")
+    assert audit["previous_cny"] == 300
+    reopened = BudgetLedger(path, 100)
+    assert reopened.summary()["limit_cny"] == 600
+    assert reopened.summary()["estimated_spent_cny"] == 19.62
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT previous_units,limit_units FROM budget_limit_audit").fetchall() == [(300_000_000, 600_000_000)]
+    with pytest.raises(BudgetLimitChanged):
+        ledger.raise_limit(600, expected_previous_cny=300, reason="Duplicate adjustment")
+
+
+def test_limit_guard_blocks_external_old_client_change(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite", 600, expected_limit_cny=600)
+    ledger.reserve(1)
+    with sqlite3.connect(ledger.path) as conn:
+        conn.execute("UPDATE budget_settings SET value=300000000 WHERE key='limit_units'")
+    with pytest.raises(BudgetLimitChanged):
+        ledger.reserve(1)
+    assert ledger.summary()["requests"] == 1
+
+
+def test_experiment_guard_blocks_uncertain_but_allows_inflight_reservations(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite", 600, expected_limit_cny=600)
+    first = ledger.reserve(1)
+    second = ledger.reserve(1)
+    assert ledger.summary()["requests"] == 2
+    ledger.finish(first, None)
+    with pytest.raises(RequestUncertain):
+        ledger.reserve(1)
+    ledger.finish(second, .01)
+    assert ledger.summary()["uncertain_requests"] == 1
+    assert ledger.summary()["estimated_spent_cny"] == .01
+
+
+def test_journal_replay_uncertain_and_payload_mismatch(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite")
+    journal = RequestJournal(tmp_path / "requests.sqlite")
+    first = journal.claim("run:caption:1", "hash", lambda: ledger.reserve(1))
+    assert not first["replayed"]
+    with pytest.raises(RequestUncertain):
+        journal.claim("run:caption:1", "hash", lambda: ledger.reserve(1))
+    journal.complete("run:caption:1", {"private_response": "cat"})
+    replayed = journal.claim("run:caption:1", "hash", lambda: ledger.reserve(1))
+    assert replayed["response"] == {"private_response": "cat"}
+    with pytest.raises(RequestReplayError):
+        journal.claim("run:caption:1", "different", lambda: ledger.reserve(1))
+    assert ledger.summary()["requests"] == 1
+    assert journal.path.stat().st_mode & 0o777 == 0o600
+
+
+def test_journal_concurrent_claim_only_reserves_once(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite")
+    journal = RequestJournal(tmp_path / "requests.sqlite")
+    def claim(_):
+        try:
+            return journal.claim("same", "payload", lambda: ledger.reserve(1))
+        except RequestUncertain:
+            return None
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        responses = list(pool.map(claim, range(20)))
+    assert sum(response is not None for response in responses) == 1
+    assert ledger.summary()["requests"] == 1
 
 
 def test_metadata_drops_payload_and_credentials(tmp_path):

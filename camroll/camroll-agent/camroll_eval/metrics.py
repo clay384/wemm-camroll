@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 
 from .compat import (BenchmarkRun, OrchestratorRepository, _media_key,
@@ -107,11 +108,99 @@ def native_stability(item):
     parsed = [row for row in calls if row.get("parse_status") is not None]
     stop = str(item.get("termination_reason") or "")
     complete = bool(item.get("answer")) and item.get("turn_outcome") in {"answer", "clarify", "refuse"} and \
-        not any(marker in stop for marker in ("timeout", "budget", "max_steps", "error", "request_limit"))
+        not any(marker in stop for marker in ("timeout", "budget", "max_steps", "error", "request_limit", "uncertain"))
     return {"json_parse_total": None, "json_parse_success": None, "json_parse_rate": None,
             "native_protocol_valid_count": sum(row["parse_status"] in {"success", "valid"} for row in parsed),
             "native_protocol_count": len(parsed), "completed_within_steps": complete,
             "final_turn_outcome": item.get("turn_outcome"), "protocol": "openai_native_tool_calls"}
+
+
+def _fixed_macro(items, field, denominator):
+    observed = _macro_metrics_from_counts(items, field)
+    count = observed["metric_count"]
+    return {metric: (observed[metric] or 0) * count / denominator if denominator else None
+            for metric in ("precision", "recall", "f1")} | {
+                "metric_count": denominator, "observed_metric_count": count,
+                "unobserved_count": max(0, denominator - count),
+                "missing_policy": "zero_contribution_with_fixed_planned_denominator"}
+
+
+def retrieval_diagnostics(state, denominator=None):
+    media = state.get("media_mapping") or {}
+    rows = []
+    for item in state.get("items") or []:
+        if str(item.get("answerability") or "").lower() == "unanswerable":
+            continue
+        ground_truth = item.get("gt_images") or [reference for reference in _normalize_media_refs(item)
+                                                 if reference["media_type"] == "image"]
+        gt_keys = {_media_key("image", reference.get("media_id") or reference.get("file_name"))
+                   for reference in ground_truth}
+        if not gt_keys:
+            continue
+        before, after, pool = set(), set(), set()
+        search_calls = 0
+        for tool in item.get("tool_trace") or []:
+            observation = tool.get("result") or {}
+            if tool.get("tool") != "search" or not isinstance(observation, dict) or observation.get("error"):
+                continue
+            branch = (observation.get("retrieval_trace") or {}).get("images")
+            if not isinstance(branch, dict):
+                continue
+            search_calls += 1
+            for candidate in branch.get("candidates") or []:
+                identifier = candidate.get("id")
+                if not isinstance(identifier, str):
+                    continue
+                pool.add(identifier)
+                for field, selection in (("recall_rank", before), ("final_rank", after)):
+                    rank = candidate.get(field)
+                    if isinstance(rank, int) and not isinstance(rank, bool) and 1 <= rank <= 10:
+                        selection.add(identifier)
+        record = {"qa_id": item.get("qa_id"), "gt_count": len(gt_keys), "image_search_calls": search_calls}
+        for name, identifiers in (("pre_top10", before), ("post_top10", after), ("candidate_pool", pool)):
+            keys = {_media_key(reference["media_type"], reference["media_id"])
+                    for reference in resolve_ids(sorted(identifiers), media)}
+            matched = len(keys & gt_keys)
+            record.update({name + "_count": len(keys), name + "_matched": matched,
+                           name + "_recall": matched / len(gt_keys)})
+        rows.append(record)
+    denominator = len(rows) if denominator is None else denominator
+    return {"scope": "per_question_union_of_image_branch_candidates_across_all_search_calls",
+            "top_k_per_search": 10, "metric_count": denominator, "observed_metric_count": len(rows),
+            "questions_with_image_search": sum(row["image_search_calls"] > 0 for row in rows),
+            "missing_policy": "no_image_search_or_unexecuted_question_contributes_zero",
+            "pre_top10_recall_macro": sum(row["pre_top10_recall"] for row in rows) / denominator if denominator else None,
+            "post_top10_recall_macro": sum(row["post_top10_recall"] for row in rows) / denominator if denominator else None,
+            "candidate_pool_recall_macro": sum(row["candidate_pool_recall"] for row in rows) / denominator if denominator else None,
+            "per_question": rows}
+
+
+def local_retrieval_performance(items):
+    groups, seen = {}, set()
+    for item in items:
+        for tool_index, tool in enumerate(item.get("tool_trace") or []):
+            for call_index, call in enumerate(tool.get("embedding_calls") or []):
+                identifier = (item.get("qa_id"), call.get("call_id") or (tool_index, call_index))
+                if identifier in seen:
+                    continue
+                seen.add(identifier)
+                operation = call.get("operation")
+                role = ("rerank" if call.get("call_type") == "rerank" or operation == "/rerank"
+                        else "embedding" if operation in {"/encode", "/api/internal/embeddings"}
+                        else "retrieval_setup")
+                group = groups.setdefault(role, {"calls": 0, "errors": 0, "durations_ms": []})
+                group["calls"] += 1
+                group["errors"] += int(call.get("status") == "error")
+                duration = call.get("duration_ms")
+                if (isinstance(duration, (int, float)) and not isinstance(duration, bool)
+                        and math.isfinite(duration) and duration >= 0):
+                    group["durations_ms"].append(duration)
+    for group in groups.values():
+        durations = group.pop("durations_ms")
+        group.update(sample_count=len(durations), total_ms=sum(durations) if durations else None,
+                     mean_ms=sum(durations) / len(durations) if durations else None,
+                     p50_ms=nearest_rank_percentile(durations, .5), p95_ms=nearest_rank_percentile(durations, .95))
+    return groups
 
 
 def summary(state):
@@ -187,11 +276,31 @@ def summary(state):
     latencies = [v for v in latencies if isinstance(v, (int, float))]
     result["agent_task_latency_p50_ms"] = nearest_rank_percentile(latencies, .5)
     result["agent_task_latency_p95_ms"] = nearest_rank_percentile(latencies, .95)
+    result["agent_task_latency_mean_ms"] = sum(latencies) / len(latencies) if latencies else None
     result["agent_task_latency_sample_count"] = len(latencies)
     # Serialized distribution keys may be integers in fresh calculations.
     dist = result.get("judge_distribution", {})
     result["quality_correct_planned_rate"] = (dist.get("2", dist.get(2, 0)) / result["planned_count"]
         if result["planned_count"] else None)
+    result["quality_unscored_planned_count"] = max(0, result["planned_count"] - result.get("judge_valid_count", 0))
+    result["quality_distribution_planned"] = {"correct": dist.get("2", dist.get(2, 0)),
+        "partial": dist.get("1", dist.get(1, 0)), "incorrect": dist.get("0", dist.get(0, 0)),
+        "unscored": result["quality_unscored_planned_count"]}
+    result["local_retrieval_performance"] = local_retrieval_performance(items)
+    if state.get("experiment_config"):
+        denominator = 81 if state.get("formal_protocol") else len(eligible)
+        final_metrics = _fixed_macro(eligible, "image_retrieval_counts", denominator)
+        result["final_delivery_macro"] = final_metrics
+        result["candidate_retrieval_macro"] = _fixed_macro(eligible, "candidate_retrieval_counts", denominator)
+        result["retrieval_diagnostics"] = retrieval_diagnostics(state, denominator)
+        for metric in ("precision", "recall", "f1"):
+            for prefix in ("retrieval_", "media_retrieval_", "image_retrieval_"):
+                result[prefix + metric + "_macro"] = final_metrics[metric]
+        result["retrieval_recall_mean"] = final_metrics["recall"]
+        result["retrieval_observed_metric_count"] = final_metrics["observed_metric_count"]
+        result["retrieval_metric_count"] = result["image_retrieval_metric_count"] = denominator
+        result["retrieval_metric_scope"] = "fixed_planned_image_delivery"
+        result["retrieval_excluded_unanswerable_count"] = 19 if state.get("formal_protocol") else len(items) - len(eligible)
     if state.get("system_id") == "sentrix":
         if not any(r.get("execution_status") is not None for r in items):
             result["execution_error_count"] = None

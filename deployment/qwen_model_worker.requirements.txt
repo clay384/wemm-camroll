@@ -1,0 +1,4 @@
+# Exact verified runtime environment; includes CUDA 12.8 PyTorch wheels.
+# Original verified environment: weknora-album-lab/adapters/model_worker_environment.json.
+--extra-index-url https://download.pytorch.org/whl/cu128
+-r qwen_model_worker.freeze.txt

@@ -43,6 +43,9 @@ def _backoff(attempt):
 
 
 class EmbeddingClient:
+    provider = "wemm"
+    dimension = 4096
+
     def __init__(self, base_url=None, key_path=None, *, timeout=180):
         self.base_url = (base_url or os.getenv("WEMM_BASE_URL", "http://127.0.0.1:8765")).rstrip("/")
         self.key_path = Path(key_path or os.getenv("WEMM_KEY_PATH", "/home/realmagic/wemm-embedding-lab/run/access.key"))
@@ -179,7 +182,9 @@ class EmbeddingClient:
                 raise WeMMError("WeMM worker not ready")
         return self._fingerprint
 
-    def encode(self, text=None, image_path=None):
+    def encode(self, text=None, image_path=None, *, role="document"):
+        if role not in {"document", "query"}:
+            raise ValueError("Embedding role must be document or query")
         if (text is None) == (image_path is None):
             raise ValueError("Supply text or image_path exclusively")
         payload = {"text": text} if text is not None else {"image_path": str(Path(image_path).resolve())}
@@ -206,5 +211,5 @@ class EmbeddingClient:
             raise WeMMError("Tokenizer split lost input text")
         return chunks
 
-    def embed_many(self, texts):
-        return [self.encode(text=text).tolist() for text in texts]
+    def embed_many(self, texts, *, role="document"):
+        return [self.encode(text=text, role=role).tolist() for text in texts]

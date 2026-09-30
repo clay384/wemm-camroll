@@ -44,6 +44,8 @@ def format_observation(tool_name: str, args: dict, result: dict | str) -> str:
     if isinstance(result, str):
         result = {"analysis": result}
     clean = public_evidence(result)
+    if isinstance(clean, dict):
+        clean.pop('retrieval_trace', None)
     if isinstance(clean, dict) and "error" in clean:
         payload = {"status": "error", **clean}
     else:

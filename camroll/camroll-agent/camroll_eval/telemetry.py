@@ -51,6 +51,23 @@ def number(value):
         return None
 
 
+def verified_qwen_pids(processes, proc_root=Path('/proc')):
+    release = os.getenv('CAMROLL_EVAL_QWEN_RELEASE')
+    if not release:
+        return []
+    root = Path(release).resolve()
+    owned = []
+    for row in processes:
+        try:
+            process = proc_root / str(row['pid'])
+            arguments = process.joinpath('cmdline').read_bytes().decode().strip('\x00').split('\x00')
+            if process.joinpath('cwd').resolve() == root and str(root / 'deployment/qwen_worker.py') in arguments:
+                owned.append(row['pid'])
+        except (OSError, UnicodeError):
+            continue
+    return owned
+
+
 def sample_resources():
     result = {"observed_at": now_iso(), "epoch": time.time(), "gpu_uuid": GPU_UUID,
               "cloud_gpu_memory_gib": None, "evaluator_pid": os.getpid()}
@@ -72,6 +89,11 @@ def sample_resources():
         result["wemm_verified_pids"] = verified
         owned_memory = [r["gpu_memory_mib"] for r in processes if r["pid"] in verified and r["gpu_memory_mib"] is not None]
         result["wemm_process_memory_mib"] = sum(owned_memory) if owned_memory else None
+        qwen_pids = verified_qwen_pids(processes)
+        result['qwen_verified_pids'] = qwen_pids
+        qwen_memory = [row['gpu_memory_mib'] for row in processes
+                       if row['pid'] in qwen_pids and row['gpu_memory_mib'] is not None]
+        result['qwen_process_memory_mib'] = sum(qwen_memory) if qwen_memory else None
     except (OSError, subprocess.SubprocessError, ValueError, StopIteration):
         result["gpu_status"] = "unavailable"
     try:
@@ -116,6 +138,7 @@ class ResourceSampler:
         return {"samples": len(self._rows), "gpu_uuid": GPU_UUID, "cloud_gpu_memory_gib": None,
                 "gpu_memory_mib_peak": maximum("gpu_memory_mib"),
                 "wemm_process_memory_mib_peak": maximum("wemm_process_memory_mib"),
+                'qwen_process_memory_mib_peak': maximum('qwen_process_memory_mib'),
                 "host_ram_used_mib_peak": maximum("host_ram_used_mib"),
                 "evaluator_rss_mib_peak": maximum("evaluator_rss_mib"),
                 "gpu_utilization_percent_peak": maximum("gpu_utilization_percent")}

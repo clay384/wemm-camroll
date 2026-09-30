@@ -10,7 +10,7 @@ import time
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .common import read_json, safe_id, now_iso
@@ -22,7 +22,7 @@ class StartRequest(BaseModel):
     config: str = Field(default="M1", pattern=r"^M[1-4]$")
 
 
-def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mount_agent=True):
+def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mount_agent=True, read_only=False):
     default_root, default_source, default_albums = configured_paths()
     root, source, albums = Path(root or default_root), Path(source or default_source), Path(albums or default_albums)
     app = FastAPI(title="CamRoll × PhotoBench", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
@@ -40,6 +40,8 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
 
     @app.middleware("http")
     async def guard(request, call_next):
+        if read_only and request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+            return JSONResponse({'error': 'read_only_report'}, status_code=405)
         if request.method not in {"GET", "HEAD", "OPTIONS"} and not origin_ok(request):
             return JSONResponse({"error": "same_origin_required"}, status_code=403)
         response = await call_next(request)
@@ -55,6 +57,12 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
 
     @app.get("/")
     def index():
+        if read_only:
+            content = (static / 'index.html').read_text().replace('独立服务 · 8772', '只读比较报告 · 8774')
+            content = content.replace('独立 CamRoll + WeMM', 'Qwen / WeMM · M4 四组对照')
+            content = content.replace('id="start"', 'id="start" hidden disabled')
+            content = content.replace('id="config"', 'id="config" hidden disabled')
+            return HTMLResponse(content)
         return FileResponse(static / "index.html")
 
     @app.get("/app.js")
@@ -68,7 +76,8 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
     @app.get("/api/health")
     def health():
         live = active["thread"] is not None and active["thread"].is_alive()
-        return {"status": "ready", "version": "0.1.0", "source_available": (source / "manifest.json").is_file(),
+        return {"status": "ready", "version": "0.1.0", 'read_only': read_only,
+                "source_available": (source / "manifest.json").is_file(),
                 "active_run": active["runner"]._state.get("run_id") if live and active["runner"]._state else None}
 
     @app.get("/api/runs")
@@ -165,7 +174,7 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
         except (FileNotFoundError, ValueError, TypeError):
             raise HTTPException(404, "run not found") from None
         filename = (state.get("build_summary") or {}).get("model_calls_file")
-        if state.get("system_id") != "camroll_wemm" or not filename:
+        if state.get("system_id") not in {'camroll_wemm', 'camroll_qwen'} or not filename:
             raise HTTPException(404, "pipeline calls were not recorded")
         permitted = (albums / state["album_id"]).resolve()
         path = (permitted / filename).resolve()
@@ -238,7 +247,10 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
         (path.parent / "cancel.requested").write_text(now_iso())
         return {"status": "cancel_requested", "note": "Already running requests finish safely; no process is terminated."}
 
-    if mount_agent:
+    if read_only:
+        app.router.routes = [route for route in app.router.routes
+                             if not (getattr(route, 'methods', set()) & {'POST', 'PUT', 'PATCH', 'DELETE'})]
+    if mount_agent and not read_only:
         from camroll_agent.service import create_app as agent_app
         app.mount("/camroll", agent_app(album_root=albums))
     app.state.repository = repo

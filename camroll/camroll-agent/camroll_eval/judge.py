@@ -2,20 +2,26 @@
 from __future__ import annotations
 
 import json
+import contextlib
+import contextvars
+import hashlib
 import os
 import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
+from camroll_agent.budget import BudgetLedger, RequestReplayError, RequestUncertain
 from .common import read_json, read_secret, object_hash, now_iso
 from .compat import JudgeProtocol
 
 
 class Judge(JudgeProtocol):
     def __init__(self, *, transport=None, cancel=None, on_call=None, model=None, url=None,
-                 retries=6, interval=.5, prompts=None, ledger=None):
+                 retries=6, interval=.5, prompts=None, ledger=None, request_namespace=None,
+                 request_journal_path=None, expected_limit_cny=None):
         self.judge_model = model or os.getenv("CAMROLL_EVAL_JUDGE_MODEL", "doubao-seed-2.0-lite")
         self.judge_url = url or os.getenv("CAMROLL_EVAL_JUDGE_URL", "https://ark.cn-beijing.volces.com/api/plan/v3")
         self.prompts = prompts or read_json(Path(__file__).with_name("judge_prompts.json"))
@@ -31,7 +37,15 @@ class Judge(JudgeProtocol):
         self._key = None
         self._qwen = None
         self.ledger = ledger
+        if ledger is not None and expected_limit_cny is not None:
+            self.ledger = BudgetLedger(ledger.path, expected_limit_cny=expected_limit_cny)
         self.stop_reason = None
+        self.request_namespace = request_namespace
+        self._request_context = contextvars.ContextVar('judge_request_context', default=None)
+        self.journal = None
+        if request_journal_path:
+            from camroll_agent.budget import RequestJournal
+            self.journal = RequestJournal(request_journal_path)
         self.input_rate = max(1.8, float(os.getenv("CAMROLL_EVAL_JUDGE_INPUT_CNY_PER_MILLION", "1.8")))
         self.output_rate = max(10.8, float(os.getenv("CAMROLL_EVAL_JUDGE_OUTPUT_CNY_PER_MILLION", "10.8")))
         if transport is None:
@@ -41,11 +55,19 @@ class Judge(JudgeProtocol):
                 self.judge_url = self._qwen.base_url
             else:
                 self._key = read_secret("CAMROLL_EVAL_JUDGE_API_KEY")
-                from camroll_agent.budget import BudgetLedger
                 budget_path = os.environ.get("CAMROLL_BUDGET_DB")
                 if not budget_path or not Path(budget_path).expanduser().is_file():
                     raise ValueError("existing CAMROLL_BUDGET_DB is required for Judge accounting")
-                self.ledger = self.ledger or BudgetLedger(budget_path, 300.)
+                self.ledger = self.ledger or BudgetLedger(budget_path, expected_limit_cny or 300.,
+                                                         expected_limit_cny=expected_limit_cny)
+
+    @contextlib.contextmanager
+    def request_context(self, namespace):
+        token = self._request_context.set({'namespace': namespace, 'ordinal': 0})
+        try:
+            yield
+        finally:
+            self._request_context.reset(token)
 
     def protocol(self):
         return {"model": self.judge_model, "url": self.judge_url,
@@ -87,27 +109,52 @@ class Judge(JudgeProtocol):
         upper_bound = len(json.dumps(payload["messages"], ensure_ascii=False).encode()) + maximum + 1024
         if upper_bound > 262144:
             raise ValueError("judge_context_limit")
+        context = self._request_context.get()
+        if context:
+            context['ordinal'] += 1
+            identity = f"{self.request_namespace}:judge:{context['namespace']}:{context['ordinal']}"
+        else:
+            identity = f"{self.request_namespace}:judge:{uuid.uuid4().hex}"
+        payload_hash = object_hash(payload)
         for attempt in range(1, attempts + 1):
+            request_id = identity + ':' + str(attempt)
             self._wait()
             began = time.monotonic()
             event = {"started_at": now_iso(), "model": self.judge_model, "attempt": attempt,
                      "role": "judge", "input_max_tokens": payload["max_tokens"]}
             call_id = None
+            replayed = False
+            result = None
             if self.ledger and not self._qwen:
                 try:
-                    call_id = self.ledger.reserve((262144 * self.input_rate + maximum * self.output_rate) / 1_000_000,
+                    def reserve():
+                        return self.ledger.reserve((262144 * self.input_rate + maximum * self.output_rate) / 1_000_000,
                         {"role": "benchmark_judge", "model": self.judge_model, "max_tokens": maximum,
                          "pricing_version": "doubao-lite-20260916-subscription-equivalent-highest-tier",
                          "input_rate": self.input_rate, "output_rate": self.output_rate})
+                    if self.journal:
+                        claim = self.journal.claim(request_id, payload_hash, reserve)
+                        call_id = claim['call_id']
+                        replayed = claim.get('replayed', False)
+                        result = claim['response']
+                    else:
+                        call_id = reserve()
+                except RequestReplayError as exc:
+                    if exc.code == 'http_429' and attempt < attempts:
+                        continue
+                    raise
                 except Exception as exc:
-                    if type(exc).__name__ == "BudgetExceeded":
-                        self.stop_reason = "budget_exhausted"
+                    if type(exc).__name__ in {'BudgetExceeded', 'BudgetLimitChanged', 'RequestUncertain'}:
+                        self.stop_reason = getattr(exc, 'code', 'budget_exhausted')
                         self._cancel.set()
                     raise
             try:
-                result = self._send(payload, timeout)
+                if not replayed:
+                    result = self._send(payload, timeout)
                 if not isinstance(result, dict) or not result.get("choices"):
                     raise ValueError("judge_invalid_envelope")
+                if self.journal and not replayed:
+                    self.journal.complete(request_id, result)
                 usage = result.get("usage") or {}
                 prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
                 known = all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in (prompt, completion))
@@ -118,9 +165,16 @@ class Judge(JudgeProtocol):
                          "total_tokens": prompt + completion if known else None,
                          "response_model": result.get("model"), "usage_missing": not known,
                          "elapsed_s": time.monotonic() - began})
+                if not known and call_id:
+                    if self.journal:
+                        self.journal.fail(request_id, 'usage_missing', uncertain=True)
+                    self.stop_reason = 'request_uncertain'
+                    self._cancel.set()
+                    raise RequestUncertain('Judge usage is missing; the full reservation is retained')
                 event.update(status="complete", usage=result.get("usage") or {},
+                             response_model=result.get("model"),
                              duration_ms=round((time.monotonic() - began) * 1000, 3),
-                             budget_call_id=call_id, estimated_cost_cny=cost,
+                             budget_call_id=call_id, estimated_cost_cny=0 if replayed else cost, replayed=replayed,
                              billing_mode="subscription_equivalent_estimate" if not self._qwen else "qwen_usage_estimate")
                 if self.on_call:
                     self.on_call(event)
@@ -132,6 +186,12 @@ class Judge(JudgeProtocol):
                     self.ledger.finish(call_id, 0 if rejected else None,
                                        {"error_code": "http_" + str(code) if isinstance(code, int) else "transport_error",
                                         "elapsed_s": time.monotonic() - began}, rejected=rejected)
+                    if self.journal:
+                        self.journal.fail(request_id, 'http_' + str(code) if rejected else 'transport_uncertain',
+                                          uncertain=not rejected)
+                    if not rejected:
+                        self.stop_reason = 'request_uncertain'
+                        self._cancel.set()
                 event.update(status="error", error_type=type(exc).__name__, http_status=code if isinstance(code, int) else None,
                              duration_ms=round((time.monotonic() - began) * 1000, 3), estimated_cost_cny=None)
                 if self.on_call:

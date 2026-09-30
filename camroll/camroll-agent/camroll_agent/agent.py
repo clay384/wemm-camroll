@@ -7,8 +7,10 @@ import copy
 from dataclasses import asdict, dataclass, field
 import inspect
 import json
+from pathlib import Path
 import re
 import time
+import uuid
 from typing import Any, Iterator
 
 from camroll_agent import tools as atom_tools
@@ -23,6 +25,7 @@ _ID_RE = re.compile(r"\b(?:img_|ev_)[A-Za-z0-9_-]+\b")
 _TERMINAL_EXCEPTIONS = {
     "BudgetExceeded": "budget_exhausted", "RequestLimitExceeded": "request_limit",
     "DeadlineExceeded": "timeout", "ProviderError": "provider_error",
+    "RequestUncertain": "request_uncertain", "BudgetLimitChanged": "budget_limit_changed",
 }
 
 
@@ -50,12 +53,13 @@ class AgentResult:
 
 class _LocalScope:
     """Bound injected legacy clients; Qwen itself accounts every retry."""
-    def __init__(self):
+    def __init__(self, deadline_s=180):
         self.started = time.monotonic()
         self.requests = 0
+        self.deadline_s = deadline_s
 
     def check(self):
-        if time.monotonic() - self.started >= 180:
+        if time.monotonic() - self.started >= self.deadline_s:
             raise _Stop("timeout")
         if self.requests >= 50:
             raise _Stop("request_limit")
@@ -162,7 +166,7 @@ def _format_question(question, choices, eval_mode):
 
 
 class Agent:
-    """Qwen3.7-Flash generation with a pinned WeMM Library snapshot.
+    """Qwen generation bound to an immutable Library model profile.
 
     Explicitly injected legacy LLM/VLM clients remain supported for callers and
     deterministic tests. Default construction never loads a local language model.
@@ -171,27 +175,47 @@ class Agent:
                  llm_backend: str = "qwen", llm_model: str | None = None,
                  max_steps: int = DEFAULT_MAX_STEPS,
                  max_view_image_calls: int = DEFAULT_MAX_VIEW_IMAGE_CALLS,
-                 config: str = "M1", library=None, embedding_client=None):
-        if config not in CONFIGS:
+                 config: str | None = None, library=None, embedding_client=None, deadline_s: float | None = None):
+        if config is not None and config not in CONFIGS:
             raise ValueError("config must be M1, M2, M3, or M4")
-        if llm is None:
-            if llm_backend not in ("qwen", "qwen3.7-flash"):
-                raise ValueError("The configured provider is Qwen; other clients must be explicitly injected")
-            if llm_model not in (None, "qwen3.7-flash"):
-                raise ValueError("All generation roles must use qwen3.7-flash")
-            from camroll_agent.qwen import QwenClient
-            llm = QwenClient()
         if library is None:
             from camroll_agent.library import Library
             library = Library(memory_dir, embedding_client=embedding_client, config=config)
+        profile = getattr(library, "experiment", None)
+        config = config or getattr(library, "config", None) or (profile.mode if profile else "M1")
         if hasattr(library, "config") and library.config != config:
             raise ValueError("Injected Library config differs from Agent config")
+        if profile and config != profile.mode:
+            raise ValueError("Agent mode differs from the published experiment")
+        if deadline_s is None:
+            deadline_s = profile.deadline_s if profile else 180
+        if isinstance(deadline_s, bool) or not isinstance(deadline_s, (int, float)) or not 0 < deadline_s <= 600:
+            raise ValueError("deadline_s must be within (0, 600]")
+        if profile and deadline_s != profile.deadline_s:
+            raise ValueError("Agent deadline differs from the published experiment")
+        generation_model = profile.generation_model if profile else llm_model or "qwen3.7-flash"
+        if profile and llm_model and llm_model != generation_model:
+            raise ValueError("Generation model differs from the published experiment")
+        for client in (llm, vlm):
+            if profile and client is not None and getattr(client, "model", None) != generation_model:
+                raise ValueError("Injected generation client differs from the published experiment")
+        if llm is None:
+            if llm_backend not in ("qwen", generation_model):
+                raise ValueError("The configured provider is Qwen; other clients must be explicitly injected")
+            from camroll_agent.qwen import QwenClient
+            options = {"model": generation_model}
+            if profile:
+                options.update(expected_limit_cny=600,
+                               request_namespace=library.cache_namespace,
+                               request_journal_path=Path(memory_dir).expanduser().resolve() / ".request-journal.sqlite")
+            llm = QwenClient(**options)
         for name, value, upper in (("max_steps", max_steps, 25), ("max_view_image_calls", max_view_image_calls, 5)):
             if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= upper:
                 raise ValueError(f"{name} must be an integer between 0 and {upper}")
         self.memory_dir, self.llm, self.vlm = memory_dir, llm, vlm if vlm is not None else llm
         self.library, self.config = library, config
         self.max_steps, self.max_view_image_calls = max_steps, max_view_image_calls
+        self.deadline_s = deadline_s
 
     def ask(self, question: str, *, choices: dict[str, str] | None = None,
             eval_mode: str = "freeform", history: list[dict] | None = None,
@@ -239,9 +263,12 @@ class Agent:
         if eval_mode not in ("freeform", "multiple_choice"):
             raise ValueError("eval_mode must be freeform or multiple_choice")
         started = time.monotonic()
-        local_scope = _LocalScope()
-        manager = (self.llm.request_scope(max_requests=50, deadline_s=180)
+        local_scope = _LocalScope(self.deadline_s)
+        manager = (self.llm.request_scope(max_requests=50, deadline_s=self.deadline_s)
                    if hasattr(self.llm, "request_scope") else nullcontext(local_scope))
+        namespace = json.dumps(request_context, sort_keys=True) if request_context else str(uuid.uuid4())
+        request_manager = (self.llm.request_context(namespace)
+                           if hasattr(self.llm, "request_context") else nullcontext())
         usage_scope = local_scope
         trace, records, explicit_views, evidence_signatures = [], {}, [], set()
         successful, failed = {}, {}
@@ -274,7 +301,7 @@ class Agent:
         final_started = False
         yield "status", {"message": "正在检索相册证据", "index_version": str(self.library.version), "config": self.config}
         try:
-            with manager as scope:
+            with request_manager, manager as scope:
                 usage_scope = scope or local_scope
                 while steps < self.max_steps:
                     local_scope.check()
@@ -401,8 +428,9 @@ class Agent:
                                         result, round_invalid = {"error": exc.detail}, True
                                     elif getattr(exc, "code", None) == "query_too_long":
                                         result, round_invalid = _error("query_too_long",
-                                            "查询超过 WeMM 的 512-token 限制；缩短 query 后重试，不要重复原查询。",
-                                            field="arguments.query", max_tokens=512), True
+                                            "查询超过当前向量模型的输入限制；缩短 query 后重试，不要重复原查询。",
+                                            field="arguments.query",
+                                            max_tokens=getattr(getattr(self.library, "experiment", None), "chunk_tokens", 512)), True
                                     else:
                                         # Avoid raw exception strings containing credentials or paths.
                                         result = _error("tool_execution_error", "工具执行失败；此结果不是检索零匹配", exception_type=type(exc).__name__)

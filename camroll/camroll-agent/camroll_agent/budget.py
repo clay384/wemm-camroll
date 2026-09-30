@@ -20,13 +20,31 @@ class BudgetExceeded(RuntimeError):
     code = "budget_exhausted"
 
 
+class BudgetLimitChanged(BudgetExceeded):
+    code = "budget_limit_changed"
+
+
+class RequestUncertain(RuntimeError):
+    code = "request_uncertain"
+
+
+class RequestReplayError(RuntimeError):
+    def __init__(self, code: str):
+        super().__init__("Persisted request failed ({})".format(code))
+        self.code = code
+
+
 class BudgetLedger:
-    def __init__(self, path: str | Path, limit_cny: float = 300.0):
-        if not 0 < limit_cny <= 300:
-            raise ValueError("The authorized budget must be within (0, 300] CNY")
+    def __init__(self, path: str | Path, limit_cny: float = 300.0, *,
+                 expected_limit_cny: float | None = None):
+        if not math.isfinite(limit_cny) or not 0 < limit_cny <= 600:
+            raise ValueError("The authorized budget must be within (0, 600] CNY")
+        if expected_limit_cny is not None and (not math.isfinite(expected_limit_cny) or not 0 < expected_limit_cny <= 600):
+            raise ValueError("Invalid expected budget")
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.limit_units = round(limit_cny * 1_000_000)
+        self.expected_limit_units = None if expected_limit_cny is None else round(expected_limit_cny * 1_000_000)
         with self._connect() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS budget_calls (
@@ -41,15 +59,42 @@ class BudgetLedger:
                 CREATE TABLE IF NOT EXISTS budget_settings (
                     key TEXT PRIMARY KEY, value INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS budget_limit_audit (
+                    id TEXT PRIMARY KEY, created REAL NOT NULL,
+                    previous_units INTEGER NOT NULL, limit_units INTEGER NOT NULL,
+                    reason TEXT NOT NULL
+                );
             """)
             conn.execute("INSERT OR IGNORE INTO budget_settings VALUES ('limit_units', ?)",
-                         (self.limit_units,))
-            # Re-opening a ledger must never replenish its allowance.
-            conn.execute("UPDATE budget_settings SET value = MIN(value, ?) WHERE key='limit_units'",
                          (self.limit_units,))
             self.limit_units = conn.execute(
                 "SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
         os.chmod(self.path, 0o600)
+
+    def raise_limit(self, limit_cny: float, *, expected_previous_cny: float, reason: str) -> dict:
+        if not math.isfinite(limit_cny) or not 0 < limit_cny <= 600 or not reason.strip():
+            raise ValueError("An authorized limit within (0, 600] and audit reason are required")
+        units = round(limit_cny * 1_000_000)
+        previous_units = round(expected_previous_cny * 1_000_000)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
+            if current != previous_units:
+                raise BudgetLimitChanged("Budget changed before the explicit limit adjustment")
+            if units <= current:
+                raise ValueError("The explicit adjustment must raise the current limit")
+            audit_id = uuid.uuid4().hex
+            conn.execute("INSERT INTO budget_limit_audit VALUES (?,?,?,?,?)",
+                         (audit_id, time.time(), current, units, reason[:1000]))
+            conn.execute("UPDATE budget_settings SET value=? WHERE key='limit_units'", (units,))
+        self.limit_units = units
+        return {"audit_id": audit_id, "previous_cny": current / 1_000_000, "limit_cny": limit_cny}
+
+    def check_limit(self) -> None:
+        with self._connect() as conn:
+            actual = conn.execute("SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
+        if self.expected_limit_units is not None and actual != self.expected_limit_units:
+            raise BudgetLimitChanged("Cumulative budget ceiling changed; new submissions are stopped")
 
     @contextlib.contextmanager
     def _connect(self):
@@ -70,6 +115,7 @@ class BudgetLedger:
             "max_tokens", "enable_thinking", "prompt_tokens", "completion_tokens",
             "total_tokens", "cached_tokens", "error_code", "elapsed_s", "stream",
             "pricing_version", "input_rate", "output_rate", "usage_missing",
+            "request_id",
         }
         clean = {k: v for k, v in (metadata or {}).items()
                  if k in allowed and (v is None or isinstance(v, (str, int, float, bool)))}
@@ -85,6 +131,11 @@ class BudgetLedger:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             limit = conn.execute("SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
+            if self.expected_limit_units is not None and limit != self.expected_limit_units:
+                raise BudgetLimitChanged("Cumulative budget ceiling changed; new submissions are stopped")
+            if self.expected_limit_units is not None and conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM budget_calls WHERE status='uncertain')").fetchone()[0]:
+                raise RequestUncertain("An earlier cloud charge is uncertain; new submissions are stopped")
             committed = conn.execute("""SELECT COALESCE(SUM(CASE
                 WHEN status IN ('reserved','uncertain') THEN reserved_units
                 ELSE charged_units END),0) FROM budget_calls""").fetchone()[0]
@@ -146,3 +197,72 @@ class BudgetLedger:
     def set_capability(self, key: str, value: Any) -> None:
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO capabilities VALUES (?,?)", (key, json.dumps(value)))
+
+
+class RequestJournal:
+    """Persist private cloud responses separately from the shared cost ledger."""
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path).expanduser()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        os.close(descriptor)
+        os.chmod(self.path, 0o600)
+        with self._connect() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS cloud_requests (
+                request_id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL,
+                call_id TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
+                response TEXT, error_code TEXT
+            )""")
+            conn.execute("CREATE TABLE IF NOT EXISTS request_settings (key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+
+    @contextlib.contextmanager
+    def _connect(self):
+        conn = sqlite3.connect(str(self.path), timeout=30)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=FULL")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+    def claim(self, request_id: str, payload_hash: str, reserve_callback) -> dict:
+        if not request_id or not payload_hash:
+            raise ValueError("Request identity and payload hash are required")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT payload_hash,call_id,status,response,error_code FROM cloud_requests WHERE request_id=?",
+                               (request_id,)).fetchone()
+            if row:
+                if row[0] != payload_hash:
+                    raise RequestReplayError("request_identity_mismatch")
+                if row[2] == "completed":
+                    return {"call_id": row[1], "response": json.loads(row[3]), "replayed": True}
+                if row[2] == "failed":
+                    raise RequestReplayError(row[4] or "request_failed")
+                raise RequestUncertain("Persisted request is pending or uncertain; automatic resend is disabled")
+            call_id = reserve_callback()
+            conn.execute("INSERT INTO cloud_requests (request_id,payload_hash,call_id,status,created) VALUES (?,?,?,'pending',?)",
+                         (request_id, payload_hash, call_id, time.time()))
+            return {"call_id": call_id, "response": None, "replayed": False}
+
+    def remember(self, key: str, value: Any) -> Any:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT OR IGNORE INTO request_settings VALUES (?,?)", (key, json.dumps(value)))
+            stored = conn.execute("SELECT value FROM request_settings WHERE key=?", (key,)).fetchone()[0]
+        return json.loads(stored)
+
+    def complete(self, request_id: str, response: dict) -> None:
+        payload = json.dumps(response, ensure_ascii=False)
+        with self._connect() as conn:
+            cursor = conn.execute("UPDATE cloud_requests SET status='completed',response=?,error_code=NULL WHERE request_id=? AND status='pending'",
+                                  (payload, request_id))
+            if cursor.rowcount != 1:
+                raise RequestUncertain("Only a pending request can be completed")
+
+    def fail(self, request_id: str, error_code: str, *, uncertain: bool = False) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE cloud_requests SET status=?,error_code=? WHERE request_id=? AND (status='pending' OR (status='completed' AND ?))",
+                         ("uncertain" if uncertain else "failed", error_code[:100], request_id, uncertain))

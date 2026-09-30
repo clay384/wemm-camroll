@@ -17,6 +17,7 @@ def main(argv=None):
     run.add_argument("--run-id")
     run.add_argument("--config", choices=["M1", "M2", "M3", "M4"], default="M1")
     run.add_argument("--resume", action="store_true")
+    run.add_argument('--experiment', choices=['Q37', 'Q38', 'W37', 'W38Max'])
     history = commands.add_parser("import-history")
     history.add_argument("directory")
     replay = commands.add_parser("replay-history")
@@ -60,7 +61,9 @@ def main(argv=None):
     elif args.command == "run":
         if args.resume and not args.run_id:
             parser.error("--resume requires --run-id")
-        result = Runner(root, source, albums).run(run_id=args.run_id, config=args.config, resume=args.resume)
+        options = {'experiment': args.experiment, 'qa_concurrency': 1, 'judge_concurrency': 4} if args.experiment else {}
+        result = Runner(root, source, albums).run(run_id=args.run_id, config='M4' if args.experiment else args.config,
+                                                 resume=args.resume, **options)
         print(json.dumps({"run_id": result["run_id"], "status": result["status"], "summary": result["summary"]},
                          ensure_ascii=False, indent=2))
         return 0 if result["status"] == "completed" else 2

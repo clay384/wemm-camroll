@@ -28,6 +28,8 @@ from camroll_agent.library import chinese_tokens, validate_date
 from camroll_agent.metadata import METADATA_VERSION, OfflineGeocoder, extract_exif
 from camroll_agent.identity import (IDENTITY_VERSION, FaceEngine, load_identity_spec,
                                     photo_faces, public_registry, seed_references)
+from camroll_agent.retrieval import (cache_key, experiment_metadata, resolve_experiment,
+                                     split_document, validate_embedding)
 
 PREPROCESS_VERSION = "exif-rgb-view95-wemm2048-jpegdefault-v2"
 CAPTION_VERSION = "zh-visible-provenance-v2"
@@ -246,10 +248,44 @@ def _prepare(source, memory):
 
 
 def _vector(embedding, *, text=None, image_path=None):
-    value = np.asarray(embedding.encode(text=text, image_path=image_path), dtype=np.float32).reshape(-1)
+    fingerprint = embedding.fingerprint
+    value = np.asarray(embedding.encode(text=text, image_path=image_path, role="document"), dtype=np.float32).reshape(-1)
     if not len(value) or not np.isfinite(value).all() or np.linalg.norm(value) == 0:
         raise ValueError("Embedding must be a finite nonzero vector")
+    if getattr(embedding, "dimension", len(value)) != len(value):
+        raise ValueError("Embedding vector dimension differs from its provider")
+    if embedding.fingerprint != fingerprint:
+        raise ValueError("Embedding fingerprint changed during encoding; vector was not cached")
     return (value / np.linalg.norm(value)).tolist()
+
+
+def _request_context(client, namespace):
+    return client.request_context(namespace) if hasattr(client, "request_context") else contextlib.nullcontext()
+
+
+def _preprocess_version(profile):
+    return profile.preprocessing if profile and profile.embedding_backend == "qwen" else PREPROCESS_VERSION
+
+
+def _index_version(profile):
+    return "qwen-vl-rrf60-rerank30-jieba0.42.1-v1" if profile and profile.embedding_backend == "qwen" else INDEX_VERSION
+
+
+def _bind_experiment(memory, profile, namespace):
+    if profile is None:
+        if (memory / "experiment.json").exists():
+            raise ValueError("This album requires its explicit experiment configuration")
+        return
+    namespace = namespace or "album-" + _hash(str(memory))[:32]
+    identity = {"profile": profile.name, "configuration_hash": cache_key([], profile, namespace),
+                "cache_namespace": namespace}
+    path = memory / "experiment.json"
+    try:
+        with path.open("x") as stream:
+            stream.write(_json(identity))
+    except FileExistsError:
+        if json.loads(path.read_text()) != identity:
+            raise ValueError("Album is bound to a different experiment; use a new album directory")
 
 
 def _caption(qwen, row, profile):
@@ -315,6 +351,9 @@ def _publish(memory, images, events, vector_ids, vectors, metadata):
     if len(dimensions) > 1:
         raise ValueError("Mixed embedding dimensions; snapshot was not published")
     dimension = next(iter(dimensions), 4096)
+    expected_dimension = metadata.get("embedding_dimension")
+    if expected_dimension is not None and dimension != expected_dimension:
+        raise ValueError("Embedding dimensions differ from the configured experiment")
     vector_hashes = {}
     for name, values in vectors.items():
         matrices[name] = np.asarray(values, dtype=np.float32).reshape((-1, dimension))
@@ -353,7 +392,8 @@ def _publish(memory, images, events, vector_ids, vectors, metadata):
 
 def build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=True,
           concurrency=4, _enrich_only=False, progress_callback=None,
-          face_engine=None, geocoder=None, cancel_callback=None) -> dict:
+          face_engine=None, geocoder=None, cancel_callback=None,
+          experiment_config=None, cache_namespace=None) -> dict:
     """Capture build model calls across worker threads without changing budgets.
 
     The Qwen client is private to this build; observers are removed even on error.
@@ -379,7 +419,8 @@ def build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tru
         try:
             summary = _build(spec_path, memory_dir, qwen, embedding, max_images=max_images, resume=resume,
                              concurrency=concurrency, _enrich_only=_enrich_only, progress_callback=progress_callback,
-                             face_engine=face_engine, geocoder=geocoder, cancel_callback=cancel_callback, _stages=stages)
+                             face_engine=face_engine, geocoder=geocoder, cancel_callback=cancel_callback, _stages=stages,
+                             experiment_config=experiment_config, cache_namespace=cache_namespace)
         except _BuildCancelled:
             # Executor context managers have now waited for in-flight requests;
             # their successful caches and budget settlement are preserved.
@@ -402,7 +443,8 @@ def build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tru
 
 def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=True,
            concurrency=4, _enrich_only=False, progress_callback=None,
-           face_engine=None, geocoder=None, cancel_callback=None, _stages=None) -> dict:
+           face_engine=None, geocoder=None, cancel_callback=None, _stages=None,
+           experiment_config=None, cache_namespace=None) -> dict:
     """Build or resume all stages; publish image rows even if captions fail.
 
     Caption workers and the single embedding worker overlap. Successful stages
@@ -421,6 +463,19 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
     preparation_stage = stages.start("prepare_metadata")
     memory = Path(memory_dir).expanduser().resolve()
     memory.mkdir(parents=True, exist_ok=True)
+    experiment, cache_namespace = resolve_experiment(experiment_config, cache_namespace)
+    if experiment:
+        cache_namespace = cache_namespace or "album-" + _hash(str(memory))[:32]
+        if getattr(qwen, "model", None) != experiment.generation_model:
+            raise ValueError("Generation model differs from the experiment configuration")
+        if getattr(embedding, "cache_namespace", cache_namespace) != cache_namespace:
+            raise ValueError("Embedding cache namespace differs from the experiment")
+    if not _enrich_only:
+        experiment = validate_embedding(embedding, experiment)
+    _bind_experiment(memory, experiment, cache_namespace)
+    preprocess_version, index_version = _preprocess_version(experiment), _index_version(experiment)
+    def stage_key(values):
+        return cache_key(values, experiment, cache_namespace)
     (memory / "assets").mkdir(exist_ok=True)
     sources, profile, album_id = _manifest(spec_path)
     identity_spec = load_identity_spec(spec_path)
@@ -462,7 +517,8 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
             if iid not in by_id:
                 by_id[iid] = {"id": iid, "image_id": iid, "asset_id": asset, "kind": "image",
                               "path": derived, "source_path": source["source_path"],
-                              "embedding_path": wemm_image, "original_path": preserved,
+                              "embedding_path": preserved if experiment and experiment.embedding_backend == "qwen" else wemm_image,
+                              "original_path": preserved,
                               "date": source["date"], "date_source": source["date_source"],
                               "location": source["location"], "people": list(source["people"]),
                               "metadata_version": METADATA_VERSION,
@@ -546,7 +602,11 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
 
     def failure(row, stage, exc):
         with count_lock:
-            if _budget_error(exc):
+            code = getattr(exc, "code", None)
+            if code in {"request_uncertain", "budget_limit_changed"}:
+                stop_reason["code"] = code
+                stopped.set()
+            elif _budget_error(exc):
                 stop_reason["code"] = "budget_exhausted"
                 stopped.set()
             elif getattr(exc, "status_code", None) in {401, 403, 404}:
@@ -557,7 +617,7 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
 
     def caption_one(row):
         checkpoint()
-        key = _hash([row["asset_id"], model, CAPTION_VERSION, PREPROCESS_VERSION, profile_hash,
+        key = stage_key([row["asset_id"], model, CAPTION_VERSION, PREPROCESS_VERSION, profile_hash,
                      row["date"], row["location"], row["people"], row.get("captured_at"),
                      row.get("capture_timezone"), row.get("place"), row.get("face_instances")])
         cached = _cached(memory, "caption", key, resume)
@@ -568,7 +628,8 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
         if stopped.is_set():
             return row["id"], None
         try:
-            result = _caption(qwen, row, profile)
+            with _request_context(qwen, "caption:" + key):
+                result = _caption(qwen, row, profile)
             _save(memory, "caption", key, result)
             return row["id"], result
         except Exception as exc:
@@ -580,7 +641,7 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
         span = stages.start("image_embedding", len(images))
         for row in images:
             checkpoint()
-            key = _hash([row["asset_id"], fingerprint, PREPROCESS_VERSION])
+            key = stage_key([row["asset_id"], fingerprint, preprocess_version])
             cached = _cached(memory, "image_embedding", key, resume)
             if cached is not None:
                 with count_lock:
@@ -641,7 +702,7 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
         if not row["caption"]:
             continue
         current_key = {k: current[k] for k in ("id", "name", "description")} if current else None
-        event_key = _hash([EVENT_VERSION, model, current_key, recent[-3:],
+        event_key = stage_key([EVENT_VERSION, model, current_key, recent[-3:],
                            {k: row.get(k) for k in ("id", "date", "date_source", "captured_at", "capture_timezone",
                                "caption", "visible_text", "location", "people", "identity_status", "place")}])
         result = _cached(memory, "event", event_key, resume)
@@ -651,7 +712,8 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
             continue
         else:
             try:
-                result = _event(qwen, current, recent, row)
+                with _request_context(qwen, "event:" + event_key):
+                    result = _event(qwen, current, recent, row)
                 _save(memory, "event", event_key, result)
             except Exception as exc:
                 failure(row, "event", exc)
@@ -698,15 +760,13 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
                     if stage == "caption" else (row["name"] + "\n" + row["description"]).strip())
             if not text:
                 continue
-            key = _hash([stage, text, fingerprint, INDEX_VERSION])
+            key = stage_key([stage, text, fingerprint, index_version])
             result = _cached(memory, stage + "_embedding", key, resume)
             if result is not None:
                 cache_hits[stage + "_embedding"] += 1
             else:
                 try:
-                    chunks = embedding.split_text(text)
-                    if not chunks:
-                        raise ValueError("Tokenizer returned no text chunks")
+                    chunks = split_document(embedding, text)
                     result = [_vector(embedding, text=chunk) for chunk in chunks]
                     _save(memory, stage + "_embedding", key, result)
                 except Exception as exc:
@@ -723,10 +783,11 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
                   cache_hits=cache_hits["caption_embedding"] + cache_hits["event_embedding"])
 
     metadata = {"album_id": album_id, "embedding_fingerprint": fingerprint, "qwen_model": model,
-                "preprocess_version": PREPROCESS_VERSION, "caption_version": CAPTION_VERSION,
-                "event_version": EVENT_VERSION, "index_format": INDEX_VERSION,
+                "preprocess_version": preprocess_version, "caption_version": CAPTION_VERSION,
+                "event_version": EVENT_VERSION, "index_format": index_version,
                 "source_count": len(sources), "image_count": len(images), "event_count": len(events),
                 "image_embedding_count": len(image_vectors), "caption_count": sum(bool(r["caption"]) for r in images),
+                "event_embedding_count": len(set(vector_ids["event"])),
                 "text_embedding_count": len(text_success), "text_coverage": len(text_success) / len(images) if images else 0,
                 "metadata_version": METADATA_VERSION, "geocoding": dict(geocoder.provenance),
                 "people_registry": registry, "relationships": identity_spec["relationships"],
@@ -735,9 +796,12 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
                                      "processed_images": sum(r["identity_status"] == "processed" for r in images),
                                      "matched_faces": sum(f.get("identity_status") == "matched" for r in images for f in r["face_instances"]),
                                      "unknown_faces": sum(f.get("identity_status") == "unknown" for r in images for f in r["face_instances"])},
-                "errors": sorted(failures, key=lambda r: (r.get("image_id", r.get("source_path", "")), r["stage"]))}
+                "errors": sorted(failures, key=lambda r: (r.get("image_id", r.get("source_path", "")), r["stage"])),
+                **experiment_metadata(experiment, cache_namespace)}
     if not _enrich_only and embedding.fingerprint != fingerprint:
-        raise ValueError("WeMM fingerprint changed during build; no snapshot published")
+        raise ValueError("Embedding fingerprint changed during build; no snapshot published")
+    if not _enrich_only:
+        validate_embedding(embedding, experiment)
     publish_ready = not _enrich_only and bool(image_vectors)
     if not _enrich_only and not image_vectors:
         stop_reason.setdefault("code", "embedding_unavailable")
@@ -763,7 +827,8 @@ def _build(spec_path, memory_dir, qwen, embedding, *, max_images=None, resume=Tr
     return summary
 
 
-def enrich(spec_path, memory_dir, qwen, *, max_images=None, resume=True, concurrency=4) -> dict:
+def enrich(spec_path, memory_dir, qwen, *, max_images=None, resume=True, concurrency=4,
+           experiment_config=None, cache_namespace=None) -> dict:
     """Prepare and cache Qwen evidence without a GPU client or index publication.
 
     The exact caption/event functions and cache keys are shared with build(), so
@@ -771,10 +836,12 @@ def enrich(spec_path, memory_dir, qwen, *, max_images=None, resume=True, concurr
     Any existing CURRENT remains unchanged until a real vector index is built.
     """
     return build(spec_path, memory_dir, qwen, None, max_images=max_images, resume=resume,
-                 concurrency=concurrency, _enrich_only=True)
+                 concurrency=concurrency, _enrich_only=True,
+                 experiment_config=experiment_config, cache_namespace=cache_namespace)
 
 
-def encode_images(spec_path, memory_dir, embedding, *, max_images=None, resume=True) -> dict:
+def encode_images(spec_path, memory_dir, embedding, *, max_images=None, resume=True,
+                  experiment_config=None, cache_namespace=None) -> dict:
     """Prepare only the serial image-vector cache, safely alongside enrich().
 
     This stage needs no Qwen or published Library. It never writes the canonical
@@ -791,13 +858,23 @@ def encode_images(spec_path, memory_dir, embedding, *, max_images=None, resume=T
         raise ValueError("Photo manifest contains no images")
     memory = Path(memory_dir).expanduser().resolve()
     memory.mkdir(parents=True, exist_ok=True)
+    experiment, cache_namespace = resolve_experiment(experiment_config, cache_namespace)
+    experiment = validate_embedding(embedding, experiment)
+    if experiment:
+        cache_namespace = cache_namespace or "album-" + _hash(str(memory))[:32]
+        if getattr(embedding, "cache_namespace", cache_namespace) != cache_namespace:
+            raise ValueError("Embedding cache namespace differs from the experiment")
+    _bind_experiment(memory, experiment, cache_namespace)
+    preprocess_version = _preprocess_version(experiment)
     (memory / "assets").mkdir(exist_ok=True)
     started = time.monotonic()
     fingerprint = embedding.fingerprint
     seen, successful, cache_hits, errors = set(), 0, 0, []
     for source in sources:
         try:
-            asset, _, image_path, _ = _prepare(source, memory)
+            asset, _, image_path, original_path = _prepare(source, memory)
+            if experiment and experiment.embedding_backend == "qwen":
+                image_path = original_path
         except Exception as exc:
             errors.append({"source_path": source["source_path"], "stage": "prepare",
                            "error": type(exc).__name__ + ": " + str(exc)[:500]})
@@ -805,7 +882,7 @@ def encode_images(spec_path, memory_dir, embedding, *, max_images=None, resume=T
         if asset in seen:
             continue
         seen.add(asset)
-        key = _hash([asset, fingerprint, PREPROCESS_VERSION])
+        key = cache_key([asset, fingerprint, preprocess_version], experiment, cache_namespace)
         cached = _cached(memory, "image_embedding", key, resume)
         if cached is not None:
             successful += 1
@@ -814,7 +891,7 @@ def encode_images(spec_path, memory_dir, embedding, *, max_images=None, resume=T
         try:
             vector = _vector(embedding, image_path=image_path)
             if embedding.fingerprint != fingerprint:
-                raise ValueError("WeMM fingerprint changed during image encoding; vector was not cached")
+                raise ValueError("Embedding fingerprint changed during image encoding; vector was not cached")
             _save(memory, "image_embedding", key, vector)
             successful += 1
         except Exception as exc:
@@ -823,26 +900,29 @@ def encode_images(spec_path, memory_dir, embedding, *, max_images=None, resume=T
                            "error": type(exc).__name__ + ": " + str(exc)[:500]})
     fingerprint_changed = embedding.fingerprint != fingerprint
     summary = {"mode": "encode_images", "album_id": album_id, "memory_dir": str(memory),
-               "embedding_fingerprint": fingerprint, "preprocess_version": PREPROCESS_VERSION,
+               "embedding_fingerprint": fingerprint, "preprocess_version": preprocess_version,
                "source_count": len(sources), "image_count": len(seen),
                "image_embedding_count": successful, "cache_hits": {"image_embedding": cache_hits},
                "new_embedding_count": successful - cache_hits, "cloud_calls": 0, "published": False,
                "index_version": None, "elapsed_s": round(time.monotonic() - started, 3),
                "stop_reason": ("fingerprint_changed" if fingerprint_changed else
                                "embedding_unavailable" if not successful else "completed"),
-               "errors": errors}
+               "errors": errors, **experiment_metadata(experiment, cache_namespace)}
     (memory / "last_image_encoding.json").write_text(_json(summary))
     if fingerprint_changed or not successful:
         raise BuildProviderFailed(summary)
     return summary
 
 
-def reindex(memory_dir, embedding) -> dict:
+def reindex(memory_dir, embedding, *, experiment_config=None, cache_namespace=None) -> dict:
     """Encode and publish existing evidence, without making any cloud calls."""
     from camroll_agent.library import Library
     memory = Path(memory_dir).expanduser().resolve()
-    previous = Library(memory)
-    if previous.metadata.get("preprocess_version") != PREPROCESS_VERSION:
+    previous = Library(memory, experiment_config=experiment_config, cache_namespace=cache_namespace)
+    experiment, cache_namespace = previous.experiment, previous.cache_namespace
+    experiment = validate_embedding(embedding, experiment)
+    preprocess_version, index_version = _preprocess_version(experiment), _index_version(experiment)
+    if previous.metadata.get("preprocess_version") != preprocess_version:
         raise ValueError(
             "Published preprocessing version differs from the current version. "
             "Run build --resume with the original photo manifest to regenerate "
@@ -854,7 +934,7 @@ def reindex(memory_dir, embedding) -> dict:
     errors = [copy.deepcopy(error) for error in previous.metadata.get("errors", [])
               if not error.get("stage", "").endswith("embedding")]
     for row in images:
-        key = _hash([row["asset_id"], fingerprint, PREPROCESS_VERSION])
+        key = cache_key([row["asset_id"], fingerprint, preprocess_version], experiment, cache_namespace)
         result = _cached(memory, "image_embedding", key, True)
         try:
             if result is None:
@@ -873,13 +953,11 @@ def reindex(memory_dir, embedding) -> dict:
                     if stage == "caption" else (row["name"] + "\n" + row["description"]).strip())
             if not text:
                 continue
-            key = _hash([stage, text, fingerprint, INDEX_VERSION])
+            key = cache_key([stage, text, fingerprint, index_version], experiment, cache_namespace)
             result = _cached(memory, stage + "_embedding", key, True)
             try:
                 if result is None:
-                    chunks = embedding.split_text(text)
-                    if not chunks:
-                        raise ValueError("Tokenizer returned no text chunks")
+                    chunks = split_document(embedding, text)
                     result = [_vector(embedding, text=chunk) for chunk in chunks]
                     _save(memory, stage + "_embedding", key, result)
                 vectors[stage].extend(result)
@@ -892,10 +970,12 @@ def reindex(memory_dir, embedding) -> dict:
     metadata.pop("vector_hashes", None)
     metadata.update(embedding_fingerprint=fingerprint, errors=errors,
                     image_embedding_count=len(vector_ids["image"]),
+                    event_embedding_count=len(set(vector_ids["event"])),
                     text_embedding_count=len(set(vector_ids["caption"])),
                     text_coverage=len(set(vector_ids["caption"])) / len(images) if images else 0)
     if embedding.fingerprint != fingerprint:
-        raise ValueError("WeMM fingerprint changed during indexing; no snapshot published")
+        raise ValueError("Embedding fingerprint changed during indexing; no snapshot published")
+    validate_embedding(embedding, experiment)
     publish_ready = bool(vector_ids["image"])
     version = _publish(memory, images, events, vector_ids, vectors, metadata) if publish_ready else None
     summary = dict(metadata, memory_dir=str(memory), index_version=version, cloud_calls=0,

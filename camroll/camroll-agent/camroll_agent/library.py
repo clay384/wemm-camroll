@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import re
 import sqlite3
@@ -17,6 +18,8 @@ from typing import Any
 import numpy as np
 from camroll_agent.identity import expanded_person_box, resolve_person
 from camroll_agent.metadata import place_matches
+from camroll_agent.retrieval import (cache_key, make_retrieval_clients, resolve_experiment,
+                                     validate_embedding)
 
 CONFIGS = {"M1": ("image", False), "M2": ("image", True),
            "M3": ("dual", False), "M4": ("dual", True)}
@@ -59,12 +62,13 @@ def _date_filter(record: dict, lower: str | None, upper: str | None) -> bool:
 
 class Library:
     def __init__(self, memory_dir: str | Path, embedding_client: Any = None,
-                 *, config: str = "M1"):
-        if config not in CONFIGS:
+                 *, config: str | None = None, experiment_config=None, reranker=None,
+                 cache_namespace=None):
+        if config is not None and config not in CONFIGS:
             raise ValueError("config must be M1, M2, M3, or M4")
         self.memory_dir = Path(memory_dir).expanduser().resolve()
-        self.config = config
         self.embedding = embedding_client
+        self.reranker = reranker
         self.version = (self.memory_dir / "CURRENT").read_text().strip()
         if not re.fullmatch(r"[a-f0-9]{32}", self.version):
             raise ValueError("Invalid CURRENT index version")
@@ -73,11 +77,38 @@ class Library:
         self.images = {r["id"]: r for r in payload["images"]}
         self.events = {r["id"]: r for r in payload["events"]}
         self.metadata = payload["metadata"]
+        self.experiment, self.cache_namespace = resolve_experiment(
+            self.metadata.get("experiment_config"), self.metadata.get("cache_namespace"))
+        requested, requested_namespace = resolve_experiment(experiment_config, cache_namespace)
+        if requested is not None:
+            if self.experiment is None or cache_key([], requested) != cache_key([], self.experiment):
+                raise ValueError("Experiment configuration differs from the published index")
+            for field in ("embedding_fingerprint", "reranker_fingerprint"):
+                if getattr(requested, field) and getattr(requested, field) != getattr(self.experiment, field):
+                    raise ValueError("Model fingerprint differs from the published index")
+        if requested_namespace and requested_namespace != self.cache_namespace:
+            raise ValueError("Experiment cache namespace differs from the published index")
+        self.config = config or (self.experiment.mode if self.experiment else "M1")
+        if self.experiment and self.config != self.experiment.mode:
+            raise ValueError("Retrieval mode differs from the frozen experiment configuration")
+        if self.experiment and self.metadata.get("experiment_fingerprint") != self.experiment.fingerprint:
+            raise ValueError("Published experiment fingerprint is invalid")
         self.fingerprint = self.metadata["embedding_fingerprint"]
+        if self.experiment and self.experiment.embedding_fingerprint != self.fingerprint:
+            raise ValueError("Published embedding fingerprint is inconsistent")
         self._vector_ids = payload["vector_ids"]
         with np.load(self.snapshot_dir / "vectors.npz", allow_pickle=False) as data:
             self._vectors = {name: data[name].copy() for name in data.files}
-        for matrix in self._vectors.values():
+        for name, matrix in self._vectors.items():
+            if (matrix.ndim != 2 or matrix.shape[0] != len(self._vector_ids.get(name, []))
+                    or not np.isfinite(matrix).all()):
+                raise ValueError("Published vector matrix is invalid")
+            expected_dimension = self.experiment.embedding_dimension if self.experiment else self.metadata.get("dimensions")
+            if expected_dimension is not None and matrix.shape[1] != expected_dimension:
+                raise ValueError("Published vector dimensions differ from the experiment")
+            expected_hash = self.metadata.get("vector_hashes", {}).get(name)
+            if expected_hash and hashlib.sha256(matrix.tobytes()).hexdigest() != expected_hash:
+                raise ValueError("Published vector hash differs from its snapshot metadata")
             matrix.flags.writeable = False
 
     @staticmethod
@@ -156,8 +187,46 @@ class Library:
             row.update(score=score, rank=rank)
             row["branch_ranks"] = (item[2] if len(item) > 2
                                    else {"image": {"rank": rank, "score": score}})
+            if len(item) > 3:
+                row.update(item[3])
             result.append(row)
         return result
+
+    def _rerank(self, query, ranked, records, *, images):
+        selected = ranked[:self.experiment.rerank_top_k]
+        candidates = []
+        for item in selected:
+            row = records[item[0]]
+            fields = ("caption", "visible_text") if images else ("name", "description")
+            candidate = {"id": row["id"], "text": "\n".join(row.get(field) or "" for field in fields).strip()}
+            if images:
+                candidate["image_path"] = self.image_paths([row["id"]])[0]
+            candidates.append(candidate)
+        scores = self.reranker.rerank(query, candidates) if candidates else []
+        if not isinstance(scores, list) or len(scores) != len(candidates):
+            raise ValueError("Reranker returned an incomplete candidate set")
+        score_by_id = {}
+        for result in scores:
+            if (not isinstance(result, dict) or result.get("id") in score_by_id
+                    or result.get("id") not in {item[0] for item in selected}
+                    or isinstance(result.get("score"), bool)
+                    or not isinstance(result.get("score"), (int, float))
+                    or not np.isfinite(result["score"])):
+                raise ValueError("Reranker returned invalid candidate scores")
+            score_by_id[result["id"]] = result
+        head = sorted(selected, key=lambda item: (-score_by_id[item[0]]["score"], item[0]))
+        recall_ranks = {item[0]: rank for rank, item in enumerate(ranked, 1)}
+        reranked, trace = [], []
+        for rank, item in enumerate(head + ranked[len(head):], 1):
+            scored = score_by_id.get(item[0])
+            details = {"recall_rank": recall_ranks[item[0]], "final_rank": rank,
+                       "reranked": scored is not None,
+                       "rerank_score": scored["score"] if scored else None,
+                       "rerank_chunk_count": scored.get("chunk_count") if scored else None}
+            branches = item[2] if len(item) > 2 else {"image": {"rank": recall_ranks[item[0]], "score": item[1]}}
+            reranked.append((item[0], item[1], branches, details))
+            trace.append({"id": item[0], "recall_score": item[1], **details})
+        return reranked, {"candidate_count": len(ranked), "reranked_count": len(head), "candidates": trace}
 
     @staticmethod
     def _combine(images, events, kind):
@@ -180,12 +249,20 @@ class Library:
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query must be a nonempty string")
         if self.embedding is None:
-            from camroll_agent.wemm import EmbeddingClient
-            self.embedding = EmbeddingClient()
+            self.embedding, selected_reranker = make_retrieval_clients(
+                self.experiment, cache_namespace=self.cache_namespace)
+            self.reranker = self.reranker or selected_reranker
+        validate_embedding(self.embedding, self.experiment)
+        if self.experiment and getattr(self.embedding, "cache_namespace", self.cache_namespace) != self.cache_namespace:
+            raise ValueError("Embedding cache namespace differs from the published index")
         if self.embedding.fingerprint != self.fingerprint:
-            raise ValueError("WeMM fingerprint differs from the published index; rebuild required")
+            raise ValueError("Embedding fingerprint differs from the published index; rebuild required")
+        if self.experiment and self.experiment.reranker_model:
+            self.reranker = self.reranker or self.embedding
+            if self.reranker.reranker_fingerprint != self.experiment.reranker_fingerprint:
+                raise ValueError("Reranker fingerprint differs from the published index")
         # The embedding endpoint enforces the query token limit; never split queries.
-        q = np.asarray(self.embedding.encode(text=query) if query_vector is None
+        q = np.asarray(self.embedding.encode(text=query, role="query") if query_vector is None
                        else query_vector, dtype=np.float32).reshape(-1)
         if not np.isfinite(q).all() or np.linalg.norm(q) == 0:
             raise ValueError("Invalid query embedding")
@@ -204,6 +281,22 @@ class Library:
                 event_rank = self._fuse(event_rank, self._rank("event", q, event_ids))
         if CONFIGS[self.config][0] == "dual" and kind != "events":
             image_rank = self._fuse(image_rank, self._rank("caption", q, image_ids))
+        retrieval_trace = {}
+        if self.experiment and self.experiment.reranker_model:
+            if kind != "events":
+                image_rank, retrieval_trace["images"] = self._rerank(query, image_rank, self.images, images=True)
+            if kind in {"both", "events"}:
+                event_rank, retrieval_trace["events"] = self._rerank(query, event_rank, self.events, images=False)
+            if self.reranker.reranker_fingerprint != self.experiment.reranker_fingerprint:
+                raise ValueError("Reranker fingerprint changed during search")
+        elif self.experiment:
+            for name, ranked in (("images", image_rank), ("events", event_rank)):
+                if name == "images" and kind == "events" or name == "events" and kind not in {"both", "events"}:
+                    continue
+                retrieval_trace[name] = {"candidate_count": len(ranked), "reranked_count": 0,
+                    "candidates": [{"id": item[0], "recall_score": item[1], "recall_rank": rank,
+                                    "final_rank": rank, "reranked": False, "rerank_score": None}
+                                   for rank, item in enumerate(ranked, 1)]}
         combined = self._combine(image_rank, event_rank, kind)
         selected = combined[:top_k]
         # The mixed prefix contains a prefix of each branch, so _decorate keeps
@@ -218,6 +311,8 @@ class Library:
         return {"results": result, "count": len(combined), "query": query,
                 "count_scope": "all_ranked_candidates_before_top_k",
                 "index_version": self.version, "config": self.config,
+                "experiment_fingerprint": self.metadata.get("experiment_fingerprint"),
+                "retrieval_trace": retrieval_trace,
                 "text_coverage": self.metadata.get("text_coverage", 0),
                 "filter_coverage": self._filter_coverage(person, persons)}
 

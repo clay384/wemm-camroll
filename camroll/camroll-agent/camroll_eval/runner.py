@@ -22,22 +22,32 @@ from .compat import BenchmarkRun
 
 class CamrollBackend:
     """Direct Python adapter; never redirects evaluation into the old 8770 service."""
-    def __init__(self):
+    def __init__(self, experiment_config=None, *, run_id=None, journal_path=None):
         from camroll_agent.qwen import QwenClient
-        from camroll_agent.wemm import EmbeddingClient
-        self.qwen = QwenClient()
-        self.embedding = EmbeddingClient()
+        self.experiment_config = experiment_config
+        if experiment_config:
+            from camroll_agent.retrieval import make_retrieval_clients
+            self.embedding, self.reranker = make_retrieval_clients(experiment_config)
+            self.qwen = QwenClient(model=experiment_config['generation_model'], expected_limit_cny=600,
+                                   request_namespace=run_id, request_journal_path=journal_path)
+        else:
+            from camroll_agent.wemm import EmbeddingClient
+            self.qwen = QwenClient()
+            self.embedding, self.reranker = EmbeddingClient(), None
 
     def build(self, spec, memory, progress, cancel):
         from camroll_agent.pipeline import build
+        options = {'experiment_config': self.experiment_config} if self.experiment_config else {}
         return build(spec, memory, self.qwen, self.embedding, concurrency=4, resume=True,
-                     progress_callback=progress, cancel_callback=cancel)
+                     progress_callback=progress, cancel_callback=cancel, **options)
 
     def agent(self, memory, config):
         from camroll_agent.agent import Agent
         from camroll_agent.library import Library
-        library = Library(memory, self.embedding, config=config)
-        return Agent(str(memory), llm=self.qwen, vlm=self.qwen, library=library, config=config)
+        options = {'experiment_config': self.experiment_config, 'reranker': self.reranker} if self.experiment_config else {}
+        library = Library(memory, self.embedding, config=config, **options)
+        return Agent(str(memory), llm=self.qwen, vlm=self.qwen, library=library, config=config,
+                     deadline_s=600 if self.experiment_config else 180)
 
     def budget(self):
         return self.qwen.usage_summary()
@@ -80,6 +90,13 @@ class Runner:
             self._lock_file = None
 
     def _cancelled(self):
+        if os.getenv('CAMROLL_EXPECTED_BUDGET_CNY'):
+            import sqlite3
+            with sqlite3.connect('file:' + os.environ['CAMROLL_BUDGET_DB'] + '?mode=ro', uri=True) as connection:
+                uncertain = connection.execute("SELECT COUNT(*) FROM budget_calls WHERE status='uncertain'").fetchone()[0]
+                limit = connection.execute("SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
+            if uncertain or limit != round(float(os.environ['CAMROLL_EXPECTED_BUDGET_CNY']) * 1_000_000):
+                self.cancel.set()
         if self._path and (self._path / "cancel.requested").exists():
             self.cancel.set()
         return self.cancel.is_set()
@@ -118,12 +135,18 @@ class Runner:
             self._save()
 
     def run(self, *, run_id=None, config="M1", qa_concurrency=12, judge_concurrency=12,
-            strict=True, resume=False, lock_held=False):
+            strict=True, resume=False, lock_held=False, experiment=None):
+        experiment_config = None
+        if experiment:
+            from camroll_agent.experiment import get_experiment_profile
+            experiment_config = get_experiment_profile(experiment).as_dict()
+            if config != 'M4' or (qa_concurrency, judge_concurrency) != (1, 4):
+                raise ValueError('four-group protocol requires M4 / Agent 1 / Judge 4')
         if config not in {"M1", "M2", "M3", "M4"}:
             raise ValueError("invalid configuration")
         if not 1 <= qa_concurrency <= 32 or not 1 <= judge_concurrency <= 32:
             raise ValueError("concurrency must be between 1 and 32")
-        if strict and (qa_concurrency, judge_concurrency) != (12, 12):
+        if strict and not experiment and (qa_concurrency, judge_concurrency) != (12, 12):
             raise ValueError("formal protocol is fixed at Agent 12 / Judge 12")
         if not lock_held:
             self.acquire()
@@ -136,7 +159,11 @@ class Runner:
             self._path = self.root / "runs" / run_id
             album_id = safe_id("eval-" + run_id)
             memory = self.albums / album_id
-            judge = self.judge_factory(cancel=self.cancel, on_call=self._judge_call)
+            if experiment_config:
+                experiment_config['cache_namespace'] = run_id
+            judge_options = {'request_namespace': run_id, 'request_journal_path': self.root / 'request-journal.sqlite',
+                             'expected_limit_cny': 600} if experiment_config else {}
+            judge = self.judge_factory(cancel=self.cancel, on_call=self._judge_call, **judge_options)
             protocol = judge.protocol()
             if resume:
                 self._state = read_json(self._path / "run.json")
@@ -146,6 +173,8 @@ class Runner:
                     raise ValueError("resume input hash changed")
                 if self._state["config"] != config:
                     raise ValueError("resume configuration changed")
+                if self._state.get('experiment_config') != experiment_config:
+                    raise ValueError('resume experiment configuration changed')
                 if self._state.get("code_revision") != os.getenv("CAMROLL_RELEASE_REVISION", "unrecorded"):
                     raise ValueError("resume code revision changed; use a new run")
                 if (self._state.get("qa_concurrency"), self._state.get("judge_concurrency")) != (qa_concurrency, judge_concurrency):
@@ -182,13 +211,23 @@ class Runner:
                         "gpu_uuid": "GPU-4ef9200c-d8f3-638a-3eeb-26fe4fa3d7b0", "cloud_gpu_memory_gib": None,
                         "comparison_scope": "historical_system_comparison"}}
                 writable = True
+                if experiment_config:
+                    self._state.update(experiment_config=experiment_config, experiment=experiment,
+                        system_id='camroll_qwen' if experiment_config['embedding_backend'] == 'qwen' else 'camroll_wemm',
+                        protocol_label='photobench-355-100-m4-qwen-v1' if strict else 'smoke-nonformal')
+                    self._state['hardware_context'].update(
+                        generation=experiment_config['generation_model'],
+                        embedding=experiment_config['embedding_model'], reranker=experiment_config.get('reranker_model'),
+                        comparison_scope='contemporary_full_system_comparison')
                 atomic_json(self._path / "input_integrity.json", integrity)
                 atomic_json(self._path / "questions.json", dataset.rows)
                 atomic_json(self._path / "build_spec.json", dataset.build_spec(album_id))
             self._save()
             self._state["judge_protocol"] = protocol
             self._state["judge_model"] = protocol["model"]
-            backend = self.backend_factory()
+            backend_options = {'experiment_config': experiment_config, 'run_id': run_id,
+                               'journal_path': self.root / 'request-journal.sqlite'} if experiment_config else {}
+            backend = self.backend_factory(**backend_options)
             self._state.setdefault("budget_before", backend.budget())
             if self.sample_resources:
                 from .telemetry import ResourceSampler
@@ -215,6 +254,7 @@ class Runner:
             if len(media) != len(source_hashes) or metadata.get("image_embedding_count", len(media)) != len(media):
                 raise RuntimeError("incomplete image registration or image embedding coverage")
             self._state["index_version"] = version
+            self._state['snapshot_metadata'] = metadata
             self._state["media_mapping"] = media
             atomic_json(self._path / "media_mapping.json", media)
             self._save()
@@ -294,6 +334,12 @@ class Runner:
             self._state["stop_reason"] = getattr(judge, "stop_reason", None)
             if any(r.get("execution_status") == "error" or r.get("judge_status") == "failed" for r in self._state["items"]):
                 self._state["status"] = "completed_with_errors" if not self._cancelled() else "cancelled"
+            if experiment_config and not self._cancelled() and any(
+                    len(item.get('runtime_turns', [])) != len(dataset.turns(rows_by_id[item['qa_id']]))
+                    or item.get('judge_status') != 'completed'
+                    or (item.get('judge') or {}).get('score') not in (0, 1, 2)
+                    for item in self._state['items']):
+                self._state['status'] = 'completed_with_errors'
             if not self._cancelled() and len(self._state["items"]) != len(dataset.rows):
                 self._state["status"] = "completed_with_errors"
             # Export once; per-item atomic checkpoints are authoritative during a run.
@@ -356,8 +402,12 @@ class Runner:
                         raise ValueError("Agent did not retain multi-turn history")
                     if response.get("turn_outcome") == "error":
                         failed = True
+                        if response.get('error_type') in {'BudgetExceeded', 'BudgetLimitChanged', 'RequestUncertain'} or response.get('stopped_reason') in {'budget_exceeded', 'budget_limit_changed', 'request_uncertain'}:
+                            self.cancel.set()
                 except Exception as exc:
                     failed = True
+                    if type(exc).__name__ in {'BudgetExceeded', 'BudgetLimitChanged', 'RequestUncertain'}:
+                        self.cancel.set()
                     response = {"final_text": "", "turn_outcome": "error", "stopped_reason": "execution_error",
                                 "error_type": type(exc).__name__, "index_version": version}
             record = {"index": turn_index, "message": definition["message"], "expected_action": definition["expected_action"],
@@ -417,7 +467,11 @@ class Runner:
         timeline = timing["timeline"]
         timeline.update(judge_started_at=now_iso(), judge_started_at_epoch=epoch)
         queue_ms = max(0., (epoch - timeline.get("judge_queued_at_epoch", epoch)) * 1000)
-        judge.score_item(item, row)
+        from contextlib import nullcontext
+        namespace = (self._state or {}).get('run_id', '') + ':' + row['qa_id']
+        context = judge.request_context(namespace) if hasattr(judge, 'request_context') else nullcontext()
+        with context:
+            judge.score_item(item, row)
         elapsed = round((time.monotonic() - start) * 1000, 3)
         timeline.update(judge_finished_at=now_iso(), judge_finished_at_epoch=time.time(), judge_queue_wait_ms=queue_ms)
         item["wall_clock_ms"] = timing["agent_wall_ms"] + queue_ms + elapsed

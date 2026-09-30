@@ -19,7 +19,8 @@ class FakeEmbedding:
         self.active = 0
         self.lock = threading.Lock()
 
-    def encode(self, *, text=None, image_path=None):
+    def encode(self, *, text=None, image_path=None, role="document"):
+        assert role in {"document", "query"}
         with self.lock:
             self.active += 1
             assert self.active == 1, "WeMM work must be serial"
@@ -425,3 +426,117 @@ def test_duplicate_manifest_date_takes_priority_over_exif(tmp_path):
     row = json.loads((memory / "enriched_records.json").read_text())["images"][0]
     assert row["date"] == "2020-01-01" and row["date_source"] == "manifest"
     assert {source["date"] for source in row["sources"]} == {"2010-01-02", "2020-01-01"}
+
+
+class FakeQwenEmbedding(FakeEmbedding):
+    provider = "qwen"
+    dimension = 2048
+    fingerprint = "fake-qwen-embedding-v1"
+    reranker_fingerprint = "fake-qwen-reranker-v1"
+
+    def __init__(self):
+        super().__init__()
+        self.roles = []
+
+    def encode(self, *, text=None, image_path=None, role="document"):
+        self.roles.append(role)
+        value = super().encode(text=text, image_path=image_path, role=role)
+        return np.pad(value, (0, 2046))
+
+    def rerank(self, query, candidates):
+        return [{"id": candidate["id"], "score": .5, "chunk_count": 1} for candidate in candidates]
+
+
+def test_qwen_build_all_vector_paths_and_bound_reindex(manifest):
+    from camroll_agent.experiment import get_experiment_profile
+    spec, memory = manifest
+    embedding, qwen = FakeQwenEmbedding(), FakeQwen()
+    config = {**get_experiment_profile("Q37").as_dict(), "cache_namespace": "q37-run"}
+    encoded = encode_images(spec, memory, embedding, experiment_config=config)
+    assert encoded["new_embedding_count"] == 2
+    summary = build(spec, memory, qwen, embedding, experiment_config=config)
+    assert summary["cache_hits"]["image_embedding"] == 2
+    library = Library(memory, embedding)
+    assert library.config == "M4"
+    assert library.metadata["experiment_config"]["embedding_fingerprint"] == embedding.fingerprint
+    assert library.metadata["experiment_config"]["reranker_fingerprint"] == embedding.reranker_fingerprint
+    assert library.metadata["cache_namespace"] == "q37-run"
+    assert all(matrix.shape[1] == 2048 for matrix in library._vectors.values())
+    assert all(row["embedding_path"] == row["original_path"] for row in library.images.values())
+    assert all(role == "document" for role in embedding.roles)
+    library.search("中文照片")
+    assert embedding.roles[-1] == "query"
+    calls = len(embedding.calls)
+    indexed = reindex(memory, embedding)
+    assert indexed["index_version"] == summary["index_version"]
+    assert len(embedding.calls) == calls
+    embedding.fingerprint = "changed"
+    with pytest.raises(ValueError, match="fingerprint"):
+        reindex(memory, embedding)
+
+
+def test_experiment_namespace_and_group_isolate_cached_builds(manifest):
+    spec, memory = manifest
+    first_qwen, first_embedding = FakeQwen(), FakeQwenEmbedding()
+    build(spec, memory, first_qwen, first_embedding, experiment_config="Q37", cache_namespace="run-q37")
+    second = memory.parent / "q38-memory"
+    second.mkdir()
+    shutil.copyfile(memory / "state.sqlite", second / "state.sqlite")
+    second_qwen, second_embedding = FakeQwen(), FakeQwenEmbedding()
+    second_qwen.model = "qwen3.8-flash"
+    result = build(spec, second, second_qwen, second_embedding,
+                   experiment_config="Q38", cache_namespace="run-q38")
+    assert all(result["cache_hits"].get(stage, 0) == 0 for stage in ("image_embedding", "caption", "event", "event_embedding"))
+    assert result["cache_hits"]["caption_embedding"] == 1
+    assert any(text for text, _ in second_embedding.calls)
+    assert len([call for call in second_qwen.calls if call["role"] == "caption"]) == 2
+    assert len([path for _, path in second_embedding.calls if path]) == 2
+    with pytest.raises(ValueError, match="different experiment"):
+        build(spec, memory, second_qwen, second_embedding, experiment_config="Q38", cache_namespace="run-q38")
+    with pytest.raises(ValueError, match="configuration"):
+        build(spec, memory, first_qwen, FakeEmbedding())
+
+
+def test_qwen_build_rejects_provider_model_and_lossy_tokenizer(manifest):
+    spec, memory = manifest
+    with pytest.raises(ValueError, match="provider"):
+        build(spec, memory, FakeQwen(), FakeEmbedding(), experiment_config="Q37")
+    with pytest.raises(ValueError, match="Generation model"):
+        build(spec, memory, FakeQwen(), FakeQwenEmbedding(), experiment_config="Q38")
+    embedding = FakeQwenEmbedding()
+    embedding.split_text = lambda text: [text[:3]]
+    result = build(spec, memory, FakeQwen(), embedding, experiment_config="Q37")
+    assert result["image_embedding_count"] == 2
+    assert result["text_embedding_count"] == 0
+    assert any("lost input" in error["error"] for error in result["errors"])
+
+
+def test_caption_and_event_requests_have_stable_replay_namespaces(manifest):
+    import contextlib
+    spec, memory = manifest
+    class ContextQwen(FakeQwen):
+        def __init__(self):
+            super().__init__()
+            self.contexts = []
+            self.local = threading.local()
+
+        @contextlib.contextmanager
+        def request_context(self, namespace):
+            self.contexts.append(namespace)
+            self.local.namespace = namespace
+            try:
+                yield
+            finally:
+                del self.local.namespace
+
+        def generate_json(self, **kwargs):
+            assert self.local.namespace.startswith(kwargs["role"] + ":")
+            return super().generate_json(**kwargs)
+
+    client = ContextQwen()
+    build(spec, memory, client, FakeEmbedding())
+    first_contexts = list(client.contexts)
+    assert len(first_contexts) == len(set(first_contexts)) == 4
+    resumed = ContextQwen()
+    build(spec, memory, resumed, FakeEmbedding(), resume=False)
+    assert set(first_contexts) == set(resumed.contexts)

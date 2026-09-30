@@ -1,4 +1,4 @@
-"""Qwen3.7-Flash cloud adapter with bounded retries and shared budget accounting."""
+"""Qwen cloud adapters with persistent request identity and shared accounting."""
 from __future__ import annotations
 
 import base64
@@ -10,10 +10,11 @@ import json
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
-from .budget import BudgetExceeded, BudgetLedger
+from .budget import BudgetExceeded, BudgetLedger, RequestJournal, RequestReplayError, RequestUncertain
 
 MODEL = "qwen3.7-flash"
 # Full-context reservation, deliberately independent of token estimation and
@@ -21,6 +22,11 @@ MODEL = "qwen3.7-flash"
 CONTEXT_TOKEN_BOUND = 1_048_576
 MAX_OUTPUT_TOKENS = 32_768
 PRICING_VERSION = "qwen3.7-flash-cn-2026-09-15"
+MODEL_LIMITS = {
+    "qwen3.7-flash": (CONTEXT_TOKEN_BOUND, CONTEXT_TOKEN_BOUND - MAX_OUTPUT_TOKENS),
+    "qwen3.8-flash": (1_000_000, 991_808),
+    "qwen3.8-max": (1_000_000, 991_808),
+}
 
 
 class ProviderError(RuntimeError):
@@ -84,6 +90,7 @@ class RequestScope:
 
 
 _scope: contextvars.ContextVar[RequestScope | None] = contextvars.ContextVar("camroll_qwen_scope", default=None)
+_request_context: contextvars.ContextVar[dict | None] = contextvars.ContextVar("camroll_cloud_identity", default=None)
 
 
 def _trace_payload(value):
@@ -125,7 +132,13 @@ def _as_dict(value: Any) -> dict:
     return vars(value) if hasattr(value, "__dict__") else {}
 
 
-def _rates(prompt_tokens: int) -> tuple[float, float]:
+def _rates(prompt_tokens: int, model: str = MODEL) -> tuple[float, float]:
+    if model == "qwen3.8-flash":
+        return 0.8, 2.7
+    if model == "qwen3.8-max":
+        return 12.0, 36.0
+    if model != MODEL:
+        raise ValueError("Unconfigured Qwen model")
     if prompt_tokens <= 32_768:
         return 0.2, 0.8
     if prompt_tokens <= 262_144:
@@ -133,16 +146,20 @@ def _rates(prompt_tokens: int) -> tuple[float, float]:
     return 1.2, 4.8
 
 
-def _usage_info(value: Any) -> tuple[dict, float | None]:
+def _usage_info(value: Any, model: str = MODEL) -> tuple[dict, float | None]:
     raw = _as_dict(value)
-    if not all(isinstance(raw.get(k), int) and raw[k] >= 0 for k in ("prompt_tokens", "completion_tokens")):
+    if not all(isinstance(raw.get(k), int) and not isinstance(raw[k], bool) and raw[k] >= 0
+               for k in ("prompt_tokens", "completion_tokens")):
         return {"usage_missing": True}, None
     prompt, completion = raw["prompt_tokens"], raw["completion_tokens"]
-    input_rate, output_rate = _rates(prompt)
+    input_rate, output_rate = _rates(prompt, model)
     details = _as_dict(raw.get("prompt_tokens_details", {}))
+    cached_tokens = details.get("cached_tokens", 0)
+    if not isinstance(cached_tokens, int) or isinstance(cached_tokens, bool) or cached_tokens < 0:
+        cached_tokens = 0
     usage = {"prompt_tokens": prompt, "completion_tokens": completion,
              "total_tokens": prompt + completion,
-             "cached_tokens": int(details.get("cached_tokens", 0) or 0),
+             "cached_tokens": cached_tokens,
              "input_rate": input_rate, "output_rate": output_rate}
     # Cache discounts are never assumed, keeping the budget conservative.
     return usage, (prompt * input_rate + completion * output_rate) / 1_000_000
@@ -153,7 +170,15 @@ class QwenClient:
 
     def __init__(self, *, sdk: Any = None, ledger: BudgetLedger | None = None,
                  base_url: str | None = None, api_key: str | None = None,
-                 sleep: Any = time.sleep, timeout_s: float = 90.0):
+                 sleep: Any = time.sleep, timeout_s: float = 90.0,
+                 model: str = MODEL, expected_limit_cny: float | None = None,
+                 request_namespace: str | None = None,
+                 request_journal_path: str | Path | None = None):
+        if model not in MODEL_LIMITS:
+            raise ProviderError("Unconfigured Qwen model", code="unknown_model")
+        self.model = model
+        self.context_token_bound, self.input_token_bound = MODEL_LIMITS[model]
+        self.pricing_version = PRICING_VERSION if model == MODEL else model + "-cn-2026-09-30"
         self.base_url = base_url or os.environ.get("QWEN_BASE_URL")
         if not self.base_url:
             if sdk is None:
@@ -164,7 +189,13 @@ class QwenClient:
         self._observer_lock = threading.RLock()
         self._observers = []
         ledger_path = os.environ.get("CAMROLL_BUDGET_DB", "~/.local/state/camroll/budget.sqlite3")
-        self.ledger = ledger or BudgetLedger(ledger_path, min(300.0, float(os.environ.get("CAMROLL_BUDGET_CNY", "300"))))
+        self.ledger = ledger or BudgetLedger(ledger_path, float(os.environ.get("CAMROLL_BUDGET_CNY", "300")),
+                                            expected_limit_cny=expected_limit_cny)
+        if ledger is not None and expected_limit_cny is not None:
+            self.ledger = BudgetLedger(ledger.path, expected_limit_cny=expected_limit_cny)
+        self.request_namespace = request_namespace or uuid.uuid4().hex
+        self._request_ordinal = 0
+        self.journal = RequestJournal(request_journal_path or self.ledger.path.with_name("cloud_requests.sqlite"))
         if sdk is None:
             from openai import OpenAI
 
@@ -173,7 +204,30 @@ class QwenClient:
                 raise ProviderError("DASHSCOPE_API_KEY is required", code="missing_credentials")
             sdk = OpenAI(api_key=key, base_url=self.base_url, max_retries=0, timeout=timeout_s)
         self.sdk = sdk
-        self._capability_key = "json_schema:" + hashlib.sha256((self.base_url + MODEL).encode()).hexdigest()
+        self._capability_key = "json_schema:" + hashlib.sha256((self.base_url + self.model).encode()).hexdigest()
+
+    @contextlib.contextmanager
+    def request_context(self, namespace: str):
+        if not namespace:
+            raise ValueError("A stable logical request namespace is required")
+        token = _request_context.set({"namespace": namespace, "ordinal": 0, "lock": threading.Lock()})
+        try:
+            yield
+        finally:
+            _request_context.reset(token)
+
+    def _request_identity(self, request_id: str | None) -> str:
+        context = _request_context.get()
+        if request_id is None and context is not None:
+            with context["lock"]:
+                context["ordinal"] += 1
+                request_id = "{}:{}".format(context["namespace"], context["ordinal"])
+        elif request_id is None:
+            with self._observer_lock:
+                self._request_ordinal += 1
+                request_id = "call:{}".format(self._request_ordinal)
+        payload = [self.request_namespace, self.base_url, self.model, request_id]
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
 
     @contextlib.contextmanager
     def request_scope(self, max_requests: int = 50, deadline_s: float = 180):
@@ -216,10 +270,13 @@ class QwenClient:
             callback(json.loads(json.dumps(metric, ensure_ascii=False)))
 
     def capabilities(self) -> dict:
-        return {"json_schema": self.ledger.capability(self._capability_key), "model": MODEL}
+        return {"json_schema": self.ledger.capability(self._capability_key), "model": self.model,
+                "context_token_bound": self.context_token_bound, "input_token_bound": self.input_token_bound,
+                "max_output_tokens": MAX_OUTPUT_TOKENS, "pricing_version": self.pricing_version}
 
     @staticmethod
-    def _preflight(messages: list[dict], tools: list | None, response_format: dict | None, max_tokens: int):
+    def _preflight(messages: list[dict], tools: list | None, response_format: dict | None, max_tokens: int,
+                   context_token_bound: int = CONTEXT_TOKEN_BOUND, input_token_bound: int | None = None):
         if not isinstance(max_tokens, int) or not 1 <= max_tokens <= MAX_OUTPUT_TOKENS:
             raise ProviderError("max_tokens must be between 1 and 32768", code="invalid_request")
         # UTF-8 bytes upper-bound text tokens; image token budget is conservative
@@ -251,15 +308,17 @@ class QwenClient:
                         token_bound += len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
             else:
                 token_bound += len(str(body or "").encode("utf-8"))
-        if token_bound > CONTEXT_TOKEN_BOUND:
+        if token_bound > context_token_bound or (input_token_bound is not None and token_bound - max_tokens > input_token_bound):
             raise ProviderError("Request exceeds the conservative context limit", code="context_limit")
 
     def chat(self, messages: list[dict], tools: list | None = None, *, role: str = "agent",
              response_format: dict | None = None, max_tokens: int = 2048,
-             tool_choice: str | dict = "auto", stream: bool = False) -> dict:
-        self._preflight(messages, tools, response_format, max_tokens)
-        reservation = (CONTEXT_TOKEN_BOUND * 1.2 + max_tokens * 4.8) / 1_000_000
-        body: dict = {"model": MODEL, "messages": messages, "max_tokens": max_tokens,
+             tool_choice: str | dict = "auto", stream: bool = False,
+             request_id: str | None = None) -> dict:
+        self._preflight(messages, tools, response_format, max_tokens, self.context_token_bound, self.input_token_bound)
+        input_rate, output_rate = _rates(self.context_token_bound, self.model)
+        reservation = (self.context_token_bound * input_rate + max_tokens * output_rate) / 1_000_000
+        body: dict = {"model": self.model, "messages": messages, "max_tokens": max_tokens,
                       "temperature": 0, "extra_body": {"enable_thinking": False}}
         if tools:
             body.update(tools=tools, tool_choice=tool_choice)
@@ -267,34 +326,51 @@ class QwenClient:
             body["response_format"] = response_format
         if stream:
             body.update(stream=True, stream_options={"include_usage": True})
+        logical_id = self._request_identity(request_id)
+        payload_hash = hashlib.sha256(json.dumps({"role": role, "body": body}, sort_keys=True,
+                                                ensure_ascii=False).encode()).hexdigest()
         for attempt in range(3):
             scope = _scope.get()
             if scope:
                 scope.check()
-            metadata = {"role": role, "model": MODEL, "prompt_version": "camroll-qwen-v1",
+            persisted_id = "{}:{}".format(logical_id, attempt)
+            metadata = {"role": role, "model": self.model, "prompt_version": "camroll-qwen-v2",
                         "max_tokens": max_tokens, "temperature": 0, "enable_thinking": False,
-                        "pricing_version": PRICING_VERSION, "stream": stream}
-            call_id = self.ledger.reserve(reservation, metadata)
+                        "pricing_version": self.pricing_version, "stream": stream, "request_id": persisted_id}
+            self.ledger.check_limit()
             try:
-                if scope:
+                claim = self.journal.claim(persisted_id, payload_hash, lambda: self.ledger.reserve(reservation, metadata))
+            except RequestReplayError as exc:
+                if exc.code == "http_429" and attempt < 2:
+                    continue
+                raise ProviderError(str(exc), code=exc.code) from None
+            call_id = claim["call_id"]
+            replayed = claim["replayed"]
+            try:
+                if scope and not replayed:
                     scope.start_request()
             except Exception:
                 self.ledger.finish(call_id, 0, {"error_code": "scope_limit"}, rejected=True)
+                self.journal.fail(persisted_id, "scope_limit")
                 raise
             timeout = self.timeout_s if scope is None else min(self.timeout_s, max(0.001, scope.deadline - time.monotonic()))
             started = time.monotonic()
-            metric = {"call_id": call_id, "call_type": role, "model": MODEL, "attempt": attempt + 1,
+            metric = {"call_id": call_id, "request_id": persisted_id, "call_type": role, "model": self.model, "attempt": attempt + 1,
                       "started_at_epoch": time.time(), "streaming": stream, "ttft_ms": None,
-                      "parse_status": None, "input": _trace_payload(body), "status": "running"}
+                      "parse_status": None, "input": _trace_payload(body), "status": "running", "replayed": replayed}
             if scope:
                 scope.record_call(metric)
             try:
-                response = self.sdk.chat.completions.create(**body, timeout=timeout)
-                if stream:
-                    response = self._collect_stream(response, started=started)
+                if replayed:
+                    response = claim["response"]
+                else:
+                    response = self.sdk.chat.completions.create(**body, timeout=timeout)
+                    if stream:
+                        response = self._collect_stream(response, started=started, default_model=self.model)
+                    response = _as_dict(response)
+                    self.journal.complete(persisted_id, response)
             except Exception as exc:
                 status = getattr(exc, "status_code", None)
-                name = type(exc).__name__.lower()
                 # Exception content is only used locally to classify unsupported
                 # capabilities. It must not enter logs, errors, or budget data.
                 error_text = str(exc).lower()
@@ -308,13 +384,15 @@ class QwenClient:
                               finished_at_epoch=time.time())
                 self.ledger.finish(call_id, 0 if rejected else None,
                                    {"error_code": code, "elapsed_s": time.monotonic() - started}, rejected=rejected)
+                self.journal.fail(persisted_id, code, uncertain=not rejected)
                 if scope:
                     scope.record({}, 0 if rejected else None, reservation)
                 self._emit_metric(metric)
                 if isinstance(exc, DeadlineExceeded):
                     raise
-                retryable = status == 429 or (isinstance(status, int) and 500 <= status <= 599) or any(
-                    word in name for word in ("timeout", "connection"))
+                if not rejected:
+                    raise RequestUncertain("Qwen request outcome is uncertain; automatic resend is disabled") from None
+                retryable = status == 429
                 if not retryable or attempt == 2:
                     raise ProviderError("Qwen request failed ({})".format(code), code=code, status_code=status) from None
                 wait = min(4.0, 0.5 * (2 ** attempt))
@@ -323,8 +401,8 @@ class QwenClient:
                 self._sleep(wait)
                 continue
             raw = _as_dict(response)
-            usage, cost = _usage_info(raw.get("usage"))
-            response_model = raw.get("model", MODEL)
+            usage, cost = _usage_info(raw.get("usage"), self.model)
+            response_model = raw.get("model", self.model)
             duration_ms = (time.monotonic() - started) * 1000
             ttft_ms = raw.get("_ttft_ms") if stream else None
             generation_ms = duration_ms - ttft_ms if ttft_ms is not None else None
@@ -333,10 +411,17 @@ class QwenClient:
                           prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
                           tokens_per_second=(usage.get("completion_tokens", 0)*1000/generation_ms
                                              if generation_ms and generation_ms > 0 and not usage.get("usage_missing") else None),
-                          estimated_cny=cost, output=_trace_payload(raw.get("choices", [])))
+                          estimated_cny=0 if replayed else cost, output=_trace_payload(raw.get("choices", [])))
             self.ledger.finish(call_id, cost, {**usage, "response_model": response_model,
                                                "elapsed_s": time.monotonic() - started})
-            if scope:
+            if cost is None:
+                self.journal.fail(persisted_id, "usage_missing", uncertain=True)
+                metric.update(status="uncertain", error_code="usage_missing")
+                if scope and not replayed:
+                    scope.record(usage, None, reservation)
+                self._emit_metric(metric)
+                raise RequestUncertain("Qwen usage is missing; the full reservation is retained and new submissions stop")
+            if scope and not replayed:
                 scope.record(usage, cost, reservation)
                 if time.monotonic() >= scope.deadline:
                     metric.update(status="late_response", error_code="deadline_exceeded")
@@ -358,7 +443,8 @@ class QwenClient:
                 self._emit_metric(metric)
                 raise ProviderError("Qwen returned an invalid message role", code="invalid_message")
             normalized = {"role": "assistant", "content": message.get("content"),
-                          "_usage": {**usage, "estimated_cny": cost, "model": response_model},
+                          "_usage": {**usage, "estimated_cny": 0 if replayed else cost, "model": response_model,
+                                     "replayed": replayed},
                           "_finish_reason": choice.get("finish_reason"), "_metric": metric}
             if message.get("tool_calls"):
                 calls = []
@@ -381,13 +467,13 @@ class QwenClient:
         raise AssertionError("unreachable")
 
     @staticmethod
-    def _collect_stream(response: Any, started: float | None = None) -> dict:
+    def _collect_stream(response: Any, started: float | None = None, default_model: str = MODEL) -> dict:
         started = time.monotonic() if started is None else started
         ttft_ms = None
         content: list[str] = []
         calls: dict[int, dict] = {}
         usage = None
-        model = MODEL
+        model = default_model
         finish_reason = None
         try:
             for chunk in response:
@@ -444,20 +530,26 @@ class QwenClient:
                                   json.dumps(schema, ensure_ascii=False), image_paths)
         messages.insert(0, {"role": "system", "content": "You are a careful assistant. Follow the requested JSON schema; do not invent facts."})
         error_detail = "invalid JSON object"
+        json_request_id = self._request_identity(None)
+        initial_schema_enabled = self.journal.remember(
+            json_request_id + ":json_schema", self.ledger.capability(self._capability_key) is not False)
         for attempt in range(max_attempts):
-            schema_enabled = self.ledger.capability(self._capability_key) is not False
+            schema_enabled = initial_schema_enabled if attempt == 0 else self.ledger.capability(self._capability_key) is not False
+            schema_enabled = self.journal.remember(json_request_id + ":schema:{}".format(attempt), schema_enabled)
             response_format = ({"type": "json_schema", "json_schema": {"name": "camroll_output", "strict": True, "schema": schema}}
                                if schema_enabled else {"type": "json_object"})
             try:
                 try:
-                    result = self.chat(messages, role=role, response_format=response_format)
+                    result = self.chat(messages, role=role, response_format=response_format,
+                                       request_id=json_request_id + ":repair:{}".format(attempt))
                     if schema_enabled:
                         self.ledger.set_capability(self._capability_key, True)
                 except ProviderError as exc:
                     if exc.code != "unsupported_schema":
                         raise
                     self.ledger.set_capability(self._capability_key, False)
-                    result = self.chat(messages, role=role, response_format={"type": "json_object"})
+                    result = self.chat(messages, role=role, response_format={"type": "json_object"},
+                                       request_id=json_request_id + ":fallback:{}".format(attempt))
                 content = result.get("content")
                 parsed = json.loads(content) if isinstance(content, str) else None
                 if not isinstance(parsed, dict):

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from PIL import Image
 import pytest
 
-from camroll_agent.budget import BudgetLedger, BudgetExceeded
+from camroll_agent.budget import BudgetLedger, BudgetExceeded, RequestUncertain
 from camroll_agent.qwen import (
     QwenClient, ProviderError, RequestLimitExceeded, DeadlineExceeded, image_messages,
 )
@@ -66,14 +66,15 @@ def test_normalizes_tool_calls_and_disables_thinking(tmp_path):
     assert result["_usage"]["estimated_cny"] == pytest.approx(0.00028)
 
 
-def test_transport_retries_429_and_timeout_are_actual_requests(tmp_path):
+def test_only_rejected_429_retries_and_unknown_timeout_stops(tmp_path):
     qwen, sdk = client(tmp_path, [HTTPError(429), APITimeoutError(), answer()])
     with qwen.request_scope() as scope:
-        qwen.chat([{"role": "user", "content": "hi"}])
-    assert len(sdk.calls) == scope.summary()["requests"] == 3
+        with pytest.raises(RequestUncertain):
+            qwen.chat([{"role": "user", "content": "hi"}])
+    assert len(sdk.calls) == scope.summary()["requests"] == 2
     assert qwen.usage_summary()["uncertain_requests"] == 1
     assert qwen.usage_summary()["reserved_cny"] > 1
-    assert qwen.usage_summary()["estimated_spent_cny"] == pytest.approx(0.00028)
+    assert qwen.usage_summary()["estimated_spent_cny"] == 0
 
 
 @pytest.mark.parametrize("status", [401, 403, 404])
@@ -140,9 +141,26 @@ def test_budget_check_happens_before_sdk_call(tmp_path):
 
 def test_missing_usage_retains_reservation(tmp_path):
     qwen, _ = client(tmp_path, [answer(usage=False)])
-    qwen.chat([{"role": "user", "content": "hi"}])
+    with pytest.raises(RequestUncertain):
+        qwen.chat([{"role": "user", "content": "hi"}])
     assert qwen.usage_summary()["uncertain_requests"] == 1
     assert qwen.usage_summary()["estimated_spent_cny"] == 0
+
+
+def test_missing_usage_blocks_other_model_clients_and_cannot_replay(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite", 600, expected_limit_cny=600)
+    first_sdk = FakeSDK([answer(usage=False)])
+    first = QwenClient(sdk=first_sdk, ledger=ledger, request_namespace="run", expected_limit_cny=600)
+    with pytest.raises(RequestUncertain):
+        first.chat([{"role": "user", "content": "hi"}], request_id="caption")
+    second_sdk = FakeSDK([answer()])
+    second = QwenClient(sdk=second_sdk, ledger=ledger, model="qwen3.8-flash", expected_limit_cny=600)
+    with pytest.raises(RequestUncertain):
+        second.chat([{"role": "user", "content": "another"}])
+    with pytest.raises(RequestUncertain):
+        first.chat([{"role": "user", "content": "hi"}], request_id="caption")
+    assert second_sdk.calls == []
+    assert len(first_sdk.calls) == ledger.summary()["requests"] == 1
 
 
 def test_deadline_prevents_new_call(tmp_path):
@@ -193,3 +211,94 @@ def test_final_generation_one_attempt(tmp_path):
     with pytest.raises(ProviderError):
         qwen.generate_json("Final answer", [], SCHEMA, role="final", max_attempts=1)
     assert len(sdk.calls) == 1
+
+
+@pytest.mark.parametrize("model,cost", [("qwen3.8-flash", .00107), ("qwen3.8-max", .0156)])
+def test_model_pricing_capability_keys_and_context_are_separate(tmp_path, model, cost):
+    sdk = FakeSDK([dict(answer(), model=model)])
+    ledger = BudgetLedger(tmp_path / "budget.sqlite", 600)
+    qwen = QwenClient(sdk=sdk, ledger=ledger, model=model, expected_limit_cny=600)
+    result = qwen.chat([{"role": "user", "content": "hi"}])
+    assert sdk.calls[0]["model"] == model
+    assert result["_usage"]["estimated_cny"] == pytest.approx(cost)
+    assert qwen.capabilities()["context_token_bound"] == 1_000_000
+    original = QwenClient(sdk=FakeSDK([]), ledger=ledger)
+    ledger.set_capability(original._capability_key, False)
+    assert qwen.capabilities()["json_schema"] is None
+
+
+def test_journal_replays_across_clients_and_preserves_intentional_duplicate_calls(tmp_path):
+    sdk = FakeSDK([answer("first"), answer("second")])
+    ledger = BudgetLedger(tmp_path / "budget.sqlite")
+    qwen = QwenClient(sdk=sdk, ledger=ledger, request_namespace="Q37-run")
+    with qwen.request_context("question-1:turn-0"):
+        assert qwen.chat([{"role": "user", "content": "hi"}])["content"] == "first"
+        assert qwen.chat([{"role": "user", "content": "hi"}])["content"] == "second"
+    replay_sdk = FakeSDK([])
+    restarted = QwenClient(sdk=replay_sdk, ledger=ledger, request_namespace="Q37-run")
+    with restarted.request_context("question-1:turn-0"), restarted.request_scope() as scope:
+        first = restarted.chat([{"role": "user", "content": "hi"}])
+        second = restarted.chat([{"role": "user", "content": "hi"}])
+    assert first["content"] == "first"
+    assert second["content"] == "second"
+    assert first["_usage"]["replayed"] is True
+    assert scope.summary()["requests"] == 0
+    assert len(sdk.calls) == 2
+    assert replay_sdk.calls == []
+    assert ledger.summary()["requests"] == 2
+
+
+def test_uncertain_identity_remains_blocked_after_restart(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite")
+    qwen = QwenClient(sdk=FakeSDK([APITimeoutError()]), ledger=ledger, request_namespace="run")
+    with pytest.raises(RequestUncertain):
+        qwen.chat([{"role": "user", "content": "hi"}], request_id="same")
+    sdk = FakeSDK([answer()])
+    restarted = QwenClient(sdk=sdk, ledger=ledger, request_namespace="run")
+    with pytest.raises(RequestUncertain):
+        restarted.chat([{"role": "user", "content": "hi"}], request_id="same")
+    assert sdk.calls == []
+    assert ledger.summary()["uncertain_requests"] == 1
+
+
+def test_run_namespace_never_replays_another_groups_response(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite")
+    sdk = FakeSDK([answer(), answer()])
+    for namespace in ("Q37-run", "W37-run"):
+        qwen = QwenClient(sdk=sdk, ledger=ledger, request_namespace=namespace)
+        qwen.chat([{"role": "user", "content": "hi"}], request_id="same")
+    assert len(sdk.calls) == 2
+
+
+def test_structured_output_replays_even_after_schema_capability_changes(tmp_path):
+    ledger = BudgetLedger(tmp_path / "budget.sqlite")
+    sdk = FakeSDK([HTTPError(400, "json_schema is not supported"), answer('{"caption":3}'), answer()])
+    original = QwenClient(sdk=sdk, ledger=ledger, request_namespace="run")
+    with original.request_context("caption-1"):
+        first = original.generate_json("Describe", [], SCHEMA)
+    assert len(sdk.calls) == 3
+    restarted_sdk = FakeSDK([])
+    restarted = QwenClient(sdk=restarted_sdk, ledger=ledger, request_namespace="run")
+    with restarted.request_context("caption-1"):
+        replayed = restarted.generate_json("Describe", [], SCHEMA)
+    assert replayed == first
+    assert restarted_sdk.calls == []
+
+
+def test_frozen_profiles_capture_model_dimensions_and_roundtrip():
+    from dataclasses import FrozenInstanceError
+    from camroll_agent.experiment import get_experiment_profile, PROFILES
+    assert list(PROFILES) == ["Q37", "Q38", "W37", "W38Max"]
+    for profile in PROFILES.values():
+        assert get_experiment_profile(profile.as_dict()) == profile
+        assert profile.deadline_s == 600
+        assert profile.mode == "M4"
+    qwen = PROFILES["Q37"]
+    assert qwen.embedding_dimension == qwen.chunk_tokens == 2048
+    with pytest.raises(FrozenInstanceError):
+        qwen.generation_model = "other"
+    bound = qwen.with_fingerprints(embedding_fingerprint="embedding-hash", reranker_fingerprint="rerank-hash")
+    assert bound.fingerprint != qwen.fingerprint
+    assert get_experiment_profile(bound.as_dict()) == bound
+    with pytest.raises(ValueError):
+        get_experiment_profile(dict(qwen.as_dict(), embedding_dimension=4096))

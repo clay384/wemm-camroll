@@ -1,0 +1,8 @@
+{
+  "file": "qwen3_vl_embedding.py",
+  "change": "Remove unused check_model_inputs import; upstream decorator is commented out.",
+  "reason": "Pinned WeMM-compatible transformers 5.2.0 does not expose this unused decorator symbol.",
+  "original_sha256": "0e447b6a80e05527f3fd437ab4f1617a6e7d0df102b8164348bbce787a41b267",
+  "patched_sha256": "5583896900eb59e6cef0f779995aa5903eeb3d37285fa8fac027b7f0b273555a",
+  "forward_scoring_changed": false
+}

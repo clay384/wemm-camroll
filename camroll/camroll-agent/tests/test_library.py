@@ -175,3 +175,118 @@ def test_both_prefix_keeps_interleaving_count_and_branch_ranks(library_factory, 
         result = lib.search("咖啡", kind="both", top_k=top_k)
         assert [(row["id"], row["rank"]) for row in result["results"]] == expected[:top_k]
         assert result["count"] == 5
+
+
+class QwenEmbedding(Embedding):
+    provider = "qwen"
+    dimension = 2048
+    reranker_fingerprint = "test-reranker-fingerprint"
+
+    def __init__(self):
+        self.roles, self.rerank_calls = [], []
+        self.scores = {"img_0": .1, "img_1": .9, "img_2": .9, "ev_a": .2, "ev_b": .8}
+
+    def encode(self, **kwargs):
+        self.roles.append(kwargs["role"])
+        vector = np.zeros(self.dimension, dtype=np.float32)
+        vector[0] = 1
+        return vector
+
+    def rerank(self, query, candidates):
+        self.rerank_calls.append((query, candidates))
+        return [{"id": item["id"], "score": self.scores.get(item["id"], .5), "chunk_count": 1}
+                for item in candidates]
+
+
+def _qwen_library(library_factory, *, image_count=None):
+    from camroll_agent.experiment import get_experiment_profile
+    from camroll_agent.retrieval import experiment_metadata
+    old = library_factory("M4")
+    client = QwenEmbedding()
+    profile = get_experiment_profile("Q37").with_fingerprints(
+        embedding_fingerprint=client.fingerprint, reranker_fingerprint=client.reranker_fingerprint)
+    images = list(old.images.values())
+    vector_ids = old._vector_ids
+    vectors = {name: np.pad(value, ((0, 0), (0, 2046))).tolist() for name, value in old._vectors.items()}
+    if image_count:
+        images = [dict(images[0], id=f"img_{number:03}", image_id=f"img_{number:03}")
+                  for number in range(image_count)]
+        vector_ids = {"image": [row["id"] for row in images], "caption": [], "event": []}
+        vectors = {"image": [[1.0] + [0.0] * 2047 for row in images], "caption": [], "event": []}
+    metadata = {**old.metadata, **experiment_metadata(profile, "test-q37")}
+    _publish(old.memory_dir, images, list(old.events.values()), vector_ids, vectors, metadata)
+    return Library(old.memory_dir, client, experiment_config="Q37"), client
+
+
+def test_qwen_reranks_modalities_before_interleaving(library_factory):
+    library, embedding = _qwen_library(library_factory)
+    result = library.search("咖啡", top_k=4)
+    assert embedding.roles == ["query"]
+    assert [row["id"] for row in result["results"]] == ["img_1", "ev_b", "img_2", "ev_a"]
+    image_candidates = embedding.rerank_calls[0][1]
+    event_candidates = embedding.rerank_calls[1][1]
+    assert all(item["image_path"] for item in image_candidates)
+    assert image_candidates[0]["text"] == "中文咖啡杯"
+    assert all("image_path" not in item for item in event_candidates)
+    assert event_candidates[0]["text"] == "咖啡旅行\n北京的帐篷和咖啡杯"
+    assert result["results"][0]["recall_rank"] == 2
+    assert result["results"][0]["final_rank"] == 1
+    assert result["results"][0]["branch_ranks"]["text"]["rank"] == 1
+    assert result["retrieval_trace"]["images"]["reranked_count"] == 3
+
+
+def test_qwen_filters_before_reranker_and_preserves_event_members(library_factory):
+    library, embedding = _qwen_library(library_factory)
+    result = library.search("咖啡", date_from="2021-01-01", top_k=4)
+    assert [row["id"] for row in result["results"]] == ["img_1", "ev_a"]
+    assert [item["id"] for item in embedding.rerank_calls[0][1]] == ["img_1"]
+    assert result["results"][1]["matched_image_ids"] == ["img_1"]
+    assert library.search("咖啡", location="不存在地点")["results"] == []
+    assert len(embedding.rerank_calls) == 2
+
+
+def test_qwen_reranks_first_thirty_and_marks_original_tail(library_factory):
+    library, embedding = _qwen_library(library_factory, image_count=60)
+    embedding.scores = {f"img_{number:03}": number / 100 for number in range(60)}
+    result = library.search("照片", kind="images", top_k=50)
+    assert len(embedding.rerank_calls[0][1]) == 30
+    assert result["count"] == 50
+    assert [row["id"] for row in result["results"][:30]] == [f"img_{number:03}" for number in reversed(range(30))]
+    tail = result["results"][30:]
+    assert [row["id"] for row in tail] == [f"img_{number:03}" for number in range(30, 50)]
+    assert all(not row["reranked"] and row["rerank_score"] is None for row in tail)
+    assert all(row["recall_rank"] == row["final_rank"] for row in tail)
+
+
+@pytest.mark.parametrize("scores", [[], [{"id": "outside", "score": 1}],
+                                     [{"id": "img_0", "score": float("nan")}]])
+def test_qwen_invalid_reranking_never_falls_back(library_factory, scores):
+    library, embedding = _qwen_library(library_factory)
+    embedding.rerank = lambda *args: scores
+    with pytest.raises(ValueError, match="Reranker"):
+        library.search("照片", kind="images")
+
+
+def test_qwen_snapshot_rejects_mixed_model_profile_and_fingerprint(library_factory):
+    library, embedding = _qwen_library(library_factory)
+    with pytest.raises(ValueError, match="configuration"):
+        Library(library.memory_dir, embedding, experiment_config="Q38")
+    with pytest.raises(ValueError, match="namespace"):
+        Library(library.memory_dir, embedding, cache_namespace="another-run")
+    with pytest.raises(ValueError, match="mode"):
+        Library(library.memory_dir, embedding, config="M1")
+    with pytest.raises(ValueError, match="provider"):
+        Library(library.memory_dir, Embedding()).search("照片")
+    embedding.reranker_fingerprint = "changed"
+    with pytest.raises(ValueError, match="fingerprint"):
+        library.search("照片")
+
+
+def test_snapshot_vector_hash_checked_before_queries(library_factory):
+    library = library_factory()
+    values = dict(library._vectors)
+    values["image"] = values["image"].copy()
+    values["image"][0, 0] = .9
+    np.savez(library.snapshot_dir / "vectors.npz", **values)
+    with pytest.raises(ValueError, match="hash"):
+        Library(library.memory_dir)

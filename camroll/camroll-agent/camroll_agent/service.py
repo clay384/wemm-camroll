@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 class AskRequest(BaseModel):
     album_id: str = Field(pattern=r'^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$')
     question: str = Field(min_length=1, max_length=20000)
-    config: str = Field(default='M1', pattern=r'^M[1-4]$')
+    config: Optional[str] = Field(default=None, pattern=r'^M[1-4]$')
     stream: bool = False
     conversation_id: Optional[str] = Field(default=None, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$')
     request_id: Optional[str] = Field(default=None, pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$')
@@ -55,32 +55,35 @@ def create_app(album_root=None, agent_factory=None):
             return agent_factory(request)
         from .agent import Agent
         from .library import Library
-        from .qwen import QwenClient
-        from .wemm import EmbeddingClient
+        from .runtime_clients import build_clients
 
         directory = (root/request.album_id).resolve()
         if not directory.is_relative_to(root) or not (directory/'CURRENT').is_file():
             raise HTTPException(404, 'Album does not have a published index')
         version = (directory/'CURRENT').read_text().strip()
         with lock:
-            if not clients:
-                clients.update(qwen=QwenClient(), embedding=EmbeddingClient())
             key = (request.album_id, version, request.config)
             if key not in libraries:
-                loaded = Library(directory, clients['embedding'], config=request.config)
+                loaded = Library(directory, None, config=request.config)
+                cloud, embedding, reranker, experiment_config = build_clients(memory=directory, snapshot=loaded)
+                loaded.embedding, loaded.reranker = embedding, reranker
                 # CURRENT can atomically change between the earlier read and
                 # Library construction. Cache under the version actually loaded,
                 # so a later rollback never retrieves a mislabelled snapshot.
                 version = loaded.version
                 key = (request.album_id, version, request.config)
                 libraries[key] = loaded
+                clients[key] = cloud
                 # Active requests retain their immutable instance independently.
                 for old in list(libraries):
                     if old[0] == request.album_id and old[1] != version:
                         del libraries[old]
+                        clients.pop(old, None)
             library = libraries[key]
-        return Agent(str(directory), llm=clients['qwen'], vlm=clients['qwen'],
-                     library=library, config=request.config)
+            cloud = clients[key]
+        options = {'deadline_s': 600} if getattr(library, 'experiment', None) else {}
+        return Agent(str(directory), llm=cloud, vlm=cloud,
+                     library=library, config=library.config, **options)
 
     @app.get('/api/health')
     def health():
@@ -144,7 +147,7 @@ def create_app(album_root=None, agent_factory=None):
             version = str(agent.library.version)
             if request.index_version and request.index_version != version:
                 raise HTTPException(409, 'Index version changed')
-            binding = [request.album_id, request.config, version]
+            binding = [request.album_id, getattr(agent, 'config', request.config), version]
             if state and state['binding'] != binding:
                 raise HTTPException(409, 'Conversation album, config or snapshot changed')
             if request_path:
