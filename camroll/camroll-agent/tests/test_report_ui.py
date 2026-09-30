@@ -199,6 +199,60 @@ def test_trace_error_does_not_mark_loaded_and_can_be_retried():
     assert "retried" in result["html"]
 
 
+def test_recovery_supplement_keeps_64_71_52_denominators_and_has_no_cold_build_label():
+    result = evaluate("""(()=>{
+      const run={run_id:'supplement-64',parent_run_id:'original-w38max',mode:'supplement',
+        experiment:'W38Max',experiment_config:{generation_model:'qwen3.8-max',embedding_backend:'wemm'},
+        config:'M4',formal_protocol:false,status:'blocked',stop_reason:'http_403',qa_count:64,
+        planned_turn_count:71,planned_eligible_qa_count:52,build_skipped:true,wall_ms:12000,
+        index_version:'frozen-snapshot',source_unchanged:true,query_cache_policy:'fresh_clients_no_parent_cache',
+        items:[{qa_id:'qa-0',question:'Synthetic question',judge:{score:2},execution_status:'error'}],
+        qa_plan:Array.from({length:64},(_,index)=>({qa_id:'qa-'+index,question:'Question '+index,planned_turn_count:1})),
+        summary:{judge_distribution:{'2':1,'1':0,'0':0},judge_valid_count:1,quality_unscored_planned_count:63,
+          quality_correct_planned_rate:1/64,retrieval_metric_count:52,retrieval_recall_macro:1/52,
+          executed_turn_count:1,task_decision_valid_count:1}};
+      state.current='supplement-64';state.currentData=run;state.runs=[run];renderRuns();renderDetail(run);
+      return {label:label(run),e2e:e2eLabel(run),rows:questionRows(run).length,list:$('#run-list').innerHTML,
+        html:$('#detail').innerHTML,counts:runCounts(run)};
+    })()""")
+    assert "恢复后64题补测·复用快照" in result["label"]
+    assert result["e2e"] == "不适用（未建库）" and result["rows"] == 64
+    assert result["counts"]["plannedQa"] == 64 and result["counts"]["plannedTurns"] == 71
+    assert 'disabled title="补测独立展示"' in result["list"]
+    assert "恢复后补测 · 独立展示" in result["list"] and "分母64题" in result["list"]
+    assert "smoke" not in result["list"] and "分母100题" not in result["list"]
+    for expected in ("固定64题正确率", "64 题 / 71 轮", "52 道可回答题", "12道不可回答题",
+                     "补测资源与费用", "本次没有建库阶段", "本次没有建库费用或建库耗时",
+                     "http_403", "原四组首跑结果保持独立", "fresh_clients_no_parent_cache"):
+        assert expected in result["html"]
+    for incorrect in ("固定100题正确率", "19道不可回答题", "独立建库覆盖与资源", "等待阶段记录"):
+        assert incorrect not in result["html"]
+
+
+def test_recovery_supplement_never_replaces_first_run_four_group_card():
+    result = evaluate("""(()=>{
+      state.runs=[{run_id:'original-w38max',experiment:'W38Max',qa_count:100,
+        status:'completed_with_errors',summary:{judge_valid_count:36}},
+        {run_id:'supplement-64',parent_run_id:'original-w38max',experiment:'W38Max',mode:'supplement',
+        qa_count:64,status:'completed',summary:{judge_valid_count:64}}];
+      renderProfile({groups:['Q37','Q38','W37','W38Max'].map(name=>({name,
+        run_id:name==='W38Max'?'original-w38max':'original-'+name})),suite_status:'incomplete'});
+      return $('#comparison-profile').innerHTML;
+    })()""")
+    assert result.count('class="group-card secondary"') == 4
+    assert "36 / 100" in result and "supplement-64" not in result and "64 / 64" not in result
+
+
+def test_recovery_supplement_cannot_be_added_to_formal_comparison():
+    result = evaluate("""(async()=>{
+      state.runs=[{run_id:'supplement-64',mode:'supplement'},{run_id:'original-w38max',mode:'full'}];
+      state.selected=new Set(['supplement-64','original-w38max']);
+      await $('#compare').handlers.click();
+      return {notice:$('#notice').textContent,comparison:$('#comparison').innerHTML};
+    })()""")
+    assert "补测独立展示" in result["notice"] and result["comparison"] == ""
+
+
 def test_resource_labels_separate_whole_gpu_from_verified_run_processes():
     result = evaluate("""(()=>{
       const run={run_id:'run',experiment:'Q38',experiment_config:{embedding_backend:'qwen'},

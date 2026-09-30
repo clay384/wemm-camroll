@@ -49,7 +49,15 @@ class Repository:
             state["summary"] = summary(state)
             state["comparison_scope"] = "historical_system_comparison"
         if path.parent.parent.name == "runs":
-            state["summary"] = summary(state)
+            if state.get("mode") == "supplement":
+                # The adapter freezes the eligible subset denominator even
+                # when later questions have not started. Generic metrics use
+                # observed items for nonformal runs and would shrink it.
+                if (state.get("supplement_summary_version") != "http403-supplement-v1"
+                        or not isinstance(state.get("summary"), dict)):
+                    raise ValueError("supplement requires a versioned subset summary")
+            else:
+                state["summary"] = summary(state)
         self._cache[key] = (stamp, state)
         return state
 
@@ -63,7 +71,10 @@ class Repository:
                 "repaired_valid_count", "attempted_turn_count_total", "budget_before", "budget_after", "phases",
                 "index_version", "summary", "resource_summary", "code_revision", "fatal_error",
                 'experiment', 'experiment_config', 'hardware_context', 'build_summary',
-                'planned_turn_count', 'resumed_at')
+                'planned_turn_count', 'resumed_at', 'planned_eligible_qa_count',
+                'supplement_summary_version', 'supplement_complete', 'build_skipped',
+                'query_cache_policy', 'source_unchanged', 'pinned_snapshot_unchanged',
+                'wall_ms', 'stop_reason')
         return {key: state.get(key) for key in keys if key in state}
 
     def get_brief(self, run_id):
@@ -182,6 +193,8 @@ class Repository:
         states = [self._load_cached(run_id) for run_id in run_ids]
         if not states:
             return {"runs": [], "rows": []}
+        if any(state.get("mode") == "supplement" for state in states):
+            raise ValueError("supplement subsets are reported separately from formal comparisons")
         if any(state.get("formal_protocol") is False for state in states):
             raise ValueError("smoke runs are excluded from formal comparisons")
         qa_ids = list(dict.fromkeys(row["qa_id"] for state in states for row in (state.get("qa_plan") or state.get("items", []))))

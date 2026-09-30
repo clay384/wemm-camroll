@@ -222,3 +222,69 @@ def test_run_file_stamp_refreshes_all_cached_projections(report):
     assert repo.item_trace("synthetic-run", "synthetic-question", "tool", 0) == updated["items"][0]["tool_trace"][0]
     assert repo.list()[0]["summary"]["judge_distribution"]["2"] == 1
     assert repo.compare(["synthetic-run"])["rows"][0]["results"][0]["score"] == 2
+
+
+def supplement_report(report):
+    state = copy.deepcopy(report["state"])
+    state.update(run_id="supplement-64", mode="supplement", formal_protocol=False,
+                 parent_run_id="synthetic-run", qa_count=64, planned_turn_count=71,
+                 planned_eligible_qa_count=52, supplement_summary_version="http403-supplement-v1",
+                 build_skipped=True, cache_mode="reused_parent_snapshot_fresh_queries",
+                 query_cache_policy="fresh_clients_no_parent_cache", source_unchanged=True,
+                 summary={"retrieval_metric_count": 52, "retrieval_recall_macro": 1 / 52,
+                          "quality_correct_planned_rate": 1 / 64, "planned_count": 64,
+                          "task_decision_planned_count": 71, "judge_valid_count": 1,
+                          "quality_unscored_planned_count": 63})
+    path = report["root"] / "runs" / state["run_id"] / "run.json"
+    atomic_json(path, state)
+    return state, path
+
+
+def test_supplement_uses_frozen_subset_summary_without_observed_denominator_recalculation(report, monkeypatch):
+    state, path = supplement_report(report)
+    before = path.read_bytes()
+    def forbidden_recalculation(*args):
+        raise AssertionError("Supplement subset metrics must not be recomputed from observed items")
+    monkeypatch.setattr("camroll_eval.repository.summary", forbidden_recalculation)
+    for result in (report["repo"].load(state["run_id"]), report["repo"].get_brief(state["run_id"]),
+                   report["repo"].detail(state["run_id"]),
+                   report["client"].get("/api/runs/" + state["run_id"]).json()):
+        assert result["summary"] == state["summary"]
+        assert result["planned_eligible_qa_count"] == 52
+        assert result["source_unchanged"] is True
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("version", [None, "unsupported-summary-version"])
+def test_supplement_missing_version_never_silently_shrinks_denominator(report, version):
+    state, path = supplement_report(report)
+    state["supplement_summary_version"] = version
+    atomic_json(path, state)
+    with pytest.raises(ValueError, match="subset summary"):
+        report["repo"].load(state["run_id"])
+
+
+def test_supplement_is_excluded_from_formal_comparison(report):
+    state, _ = supplement_report(report)
+    with pytest.raises(ValueError, match="separately"):
+        report["repo"].compare(["synthetic-run", state["run_id"]])
+    assert report["client"].get("/api/compare?ids=synthetic-run,supplement-64").status_code == 404
+
+
+def test_supplement_cost_sidecar_overlays_only_supplement_without_rewriting_first_run_audit(report):
+    state, path = supplement_report(report)
+    audit_path = report["root"] / "cost-audit.json"
+    atomic_json(audit_path, {"runs": {"synthetic-run": {"own_estimated_cny": 2.5}}})
+    original_audit = audit_path.read_bytes()
+    atomic_json(report["root"] / "supplement-cost-audit.json", {"runs": {
+        "supplement-64": {"own_estimated_cny": 1.25},
+        "synthetic-run": {"own_estimated_cny": 999}}})
+    before = path.read_bytes()
+    client = report["client"]
+    rows = {row["run_id"]: row for row in client.get("/api/runs").json()["runs"]}
+    assert rows["synthetic-run"]["cost_audit"]["own_estimated_cny"] == 2.5
+    assert rows["supplement-64"]["cost_audit"]["own_estimated_cny"] == 1.25
+    assert client.get("/api/runs/supplement-64").json()["cost_audit"]["own_estimated_cny"] == 1.25
+    assert client.get("/api/runs/supplement-64/export").content == before
+    assert path.read_bytes() == before
+    assert audit_path.read_bytes() == original_audit

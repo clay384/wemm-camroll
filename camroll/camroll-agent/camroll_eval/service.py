@@ -33,12 +33,15 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
 
     def with_cost_audit(state):
         # Report-only overlay: preserve immutable evaluator run.json bytes.
-        path = root / 'cost-audit.json'
-        if path.is_file():
-            audit = read_json(path)
-            value = (audit.get('runs') or {}).get(state.get('run_id'))
-            if isinstance(value, dict):
-                state = {**state, 'cost_audit': value}
+        paths = [root / 'cost-audit.json']
+        if state.get('mode') == 'supplement':
+            paths.append(root / 'supplement-cost-audit.json')
+        for path in paths:
+            if path.is_file():
+                audit = read_json(path)
+                value = (audit.get('runs') or {}).get(state.get('run_id'))
+                if isinstance(value, dict):
+                    state = {**state, 'cost_audit': value}
         return state
 
     def origin_ok(request):
