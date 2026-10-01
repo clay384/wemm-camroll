@@ -36,6 +36,13 @@ class ProviderError(RuntimeError):
         self.status_code = status_code
 
 
+def _invalid_output_error(message, code, *, metric, response=None, finish_reason=None):
+    error = ProviderError(message, code=code)
+    raw = response if isinstance(response, dict) else {"role": "assistant", "content": None}
+    error.gate_output = {**raw, "_metric": metric, "_finish_reason": finish_reason}
+    return error
+
+
 class RequestLimitExceeded(ProviderError):
     def __init__(self):
         super().__init__("The per-question cloud request limit was reached", code="request_limit")
@@ -173,10 +180,14 @@ class QwenClient:
                  sleep: Any = time.sleep, timeout_s: float = 90.0,
                  model: str = MODEL, expected_limit_cny: float | None = None,
                  request_namespace: str | None = None,
-                 request_journal_path: str | Path | None = None):
+                 request_journal_path: str | Path | None = None,
+                 strict_response_model: bool = False):
         if model not in MODEL_LIMITS:
             raise ProviderError("Unconfigured Qwen model", code="unknown_model")
         self.model = model
+        if type(strict_response_model) is not bool:
+            raise ValueError("strict_response_model must be boolean")
+        self.strict_response_model = strict_response_model
         self.context_token_bound, self.input_token_bound = MODEL_LIMITS[model]
         self.pricing_version = PRICING_VERSION if model == MODEL else model + "-cn-2026-09-30"
         self.base_url = base_url or os.environ.get("QWEN_BASE_URL")
@@ -247,6 +258,18 @@ class QwenClient:
 
     def usage_summary(self) -> dict:
         return self.ledger.summary()
+
+    @staticmethod
+    def _gate_request_budget_hook():
+        """Share the active Agent's physical-request limit with its verifier."""
+        scope = _scope.get()
+        if scope is None:
+            raise RuntimeError("Evidence verification requires an active request scope")
+        scope.start_request()
+
+    @staticmethod
+    def gate_request_scope():
+        return _scope.get()
 
     @contextlib.contextmanager
     def capture_calls(self, callback):
@@ -356,6 +379,8 @@ class QwenClient:
             timeout = self.timeout_s if scope is None else min(self.timeout_s, max(0.001, scope.deadline - time.monotonic()))
             started = time.monotonic()
             metric = {"call_id": call_id, "request_id": persisted_id, "call_type": role, "model": self.model, "attempt": attempt + 1,
+                      "payload_hash": payload_hash,
+                      "semantic_request_id": request_id,
                       "started_at_epoch": time.time(), "streaming": stream, "ttft_ms": None,
                       "parse_status": None, "input": _trace_payload(body), "status": "running", "replayed": replayed}
             if scope:
@@ -366,7 +391,8 @@ class QwenClient:
                 else:
                     response = self.sdk.chat.completions.create(**body, timeout=timeout)
                     if stream:
-                        response = self._collect_stream(response, started=started, default_model=self.model)
+                        response = self._collect_stream(response, started=started, default_model=self.model,
+                                                        strict_response_model=self.strict_response_model)
                     response = _as_dict(response)
                     self.journal.complete(persisted_id, response)
             except Exception as exc:
@@ -427,11 +453,18 @@ class QwenClient:
                     metric.update(status="late_response", error_code="deadline_exceeded")
                     self._emit_metric(metric)
                     raise DeadlineExceeded()
+            if self.strict_response_model and raw.get("model") != self.model:
+                metric.update(status="error", error_code="response_model_mismatch",
+                              requested_model=self.model, response_model=raw.get("model"),
+                              observed_models=raw.get("_observed_models"))
+                self._emit_metric(metric)
+                raise ProviderError("Actual response model differs from the pinned inference model",
+                                    code="response_model_mismatch")
             choices = raw.get("choices", [])
             if not choices:
                 metric.update(status="error", error_code="empty_response")
                 self._emit_metric(metric)
-                raise ProviderError("Qwen returned no assistant choice", code="empty_response")
+                raise _invalid_output_error("Qwen returned no assistant choice", "empty_response", metric=metric)
             choice = _as_dict(choices[0])
             message = _as_dict(choice.get("message"))
             if message.get("refusal"):
@@ -441,7 +474,8 @@ class QwenClient:
             if message.get("role", "assistant") != "assistant":
                 metric.update(status="error", error_code="invalid_message")
                 self._emit_metric(metric)
-                raise ProviderError("Qwen returned an invalid message role", code="invalid_message")
+                raise _invalid_output_error("Qwen returned an invalid message role", "invalid_message", metric=metric,
+                                            response=message, finish_reason=choice.get("finish_reason"))
             normalized = {"role": "assistant", "content": message.get("content"),
                           "_usage": {**usage, "estimated_cny": 0 if replayed else cost, "model": response_model,
                                      "replayed": replayed},
@@ -457,23 +491,27 @@ class QwenClient:
             if not isinstance(normalized["content"], (str, type(None))):
                 metric.update(status="error", error_code="invalid_message")
                 self._emit_metric(metric)
-                raise ProviderError("Qwen returned unsupported assistant content", code="invalid_message")
+                raise _invalid_output_error("Qwen returned unsupported assistant content", "invalid_message", metric=metric,
+                                            response=message, finish_reason=choice.get("finish_reason"))
             if not normalized.get("tool_calls") and not normalized.get("content"):
                 metric.update(status="error", error_code="empty_response")
                 self._emit_metric(metric)
-                raise ProviderError("Qwen returned empty assistant content", code="empty_response")
+                raise _invalid_output_error("Qwen returned empty assistant content", "empty_response", metric=metric,
+                                            response=message, finish_reason=choice.get("finish_reason"))
             self._emit_metric(metric)
             return normalized
         raise AssertionError("unreachable")
 
     @staticmethod
-    def _collect_stream(response: Any, started: float | None = None, default_model: str = MODEL) -> dict:
+    def _collect_stream(response: Any, started: float | None = None, default_model: str = MODEL,
+                        strict_response_model: bool = False) -> dict:
         started = time.monotonic() if started is None else started
         ttft_ms = None
         content: list[str] = []
         calls: dict[int, dict] = {}
         usage = None
-        model = default_model
+        model = None if strict_response_model else default_model
+        observed_models = set()
         finish_reason = None
         try:
             for chunk in response:
@@ -481,7 +519,13 @@ class QwenClient:
                 if scope and time.monotonic() >= scope.deadline:
                     raise DeadlineExceeded()
                 raw = _as_dict(chunk)
-                model = raw.get("model", model)
+                actual_model = raw.get("model")
+                if isinstance(actual_model, str) and actual_model:
+                    observed_models.add(actual_model)
+                if strict_response_model:
+                    model = next(iter(observed_models)) if len(observed_models) == 1 else None
+                else:
+                    model = raw.get("model", model)
                 if raw.get("usage"):
                     usage = raw["usage"]
                 for raw_choice in raw.get("choices", []):
@@ -510,12 +554,14 @@ class QwenClient:
             if hasattr(response, "close"):
                 response.close()
         return {"model": model, "usage": usage, "_ttft_ms": ttft_ms,
+                **({"_observed_models": sorted(observed_models)} if strict_response_model else {}),
                 "choices": [{"finish_reason": finish_reason, "message": {
                     "role": "assistant", "content": "".join(content) or None,
                     "tool_calls": [calls[i] for i in sorted(calls)]}}]}
 
     def generate_json(self, prompt: str, image_paths: list[str | Path], schema: dict, *,
-                      role: str = "caption", max_attempts: int = 3) -> dict:
+                      role: str = "caption", max_attempts: int = 3, gate=None,
+                      gate_id: str | None = None, output_validator=None) -> dict:
         from jsonschema import Draft202012Validator
         from jsonschema.exceptions import SchemaError
 
@@ -529,6 +575,32 @@ class QwenClient:
         messages = image_messages(prompt + "\nReturn exactly one JSON object matching the supplied schema.\n" +
                                   json.dumps(schema, ensure_ascii=False), image_paths)
         messages.insert(0, {"role": "system", "content": "You are a careful assistant. Follow the requested JSON schema; do not invent facts."})
+        if gate is not None:
+            from .gate import GateViolation
+            if not gate_id:
+                raise ValueError("A stable logical output gate ID is required")
+            # Freeze capability selection for all four attempts, including
+            # process replay. Do not silently change an exact-repeat payload.
+            schema_enabled = self.journal.remember(gate.namespace + ":" + gate_id + ":format",
+                                                    self.ledger.capability(self._capability_key) is not False)
+            response_format = ({"type": "json_schema", "json_schema": {"name": "camroll_output", "strict": True, "schema": schema}}
+                               if schema_enabled else {"type": "json_object"})
+            def send(current, request_id):
+                return self.chat(current, role=role, response_format=response_format, request_id=request_id)
+            def validate(result, request_id):
+                try:
+                    parsed = json.loads(result.get("content"), parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+                except (ValueError, TypeError):
+                    raise GateViolation("invalid_json", reason="Response must contain one JSON object") from None
+                errors = sorted(validator.iter_errors(parsed), key=lambda e: str(list(e.path)))
+                if errors:
+                    raise GateViolation("invalid_schema", field=";".join(".".join(map(str, e.path)) or "$" for e in errors[:5]),
+                                        reason=";".join(e.validator for e in errors[:5]))
+                if output_validator:
+                    output_validator(parsed, request_id)
+                result.get("_metric", {})["parse_status"] = "valid"
+                return parsed
+            return gate.run(gate_id=gate_id, role=role, messages=messages, send=send, validate=validate)
         error_detail = "invalid JSON object"
         json_request_id = self._request_identity(None)
         initial_schema_enabled = self.journal.remember(

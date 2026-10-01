@@ -22,27 +22,31 @@ class StartRequest(BaseModel):
     config: str = Field(default="M1", pattern=r"^M[1-4]$")
 
 
-def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mount_agent=True, read_only=False):
+def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mount_agent=True, read_only=False,
+               history_roots=()):
     default_root, default_source, default_albums = configured_paths()
     root, source, albums = Path(root or default_root), Path(source or default_source), Path(albums or default_albums)
     app = FastAPI(title="CamRoll × PhotoBench", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
-    repo = Repository(root)
+    if history_roots and not read_only:
+        raise ValueError('history roots are allowed only in a read-only report')
+    repo = Repository(root, history_roots=history_roots)
     execution_lock = threading.Lock()
     active = {"runner": None, "thread": None}
     static = Path(__file__).with_name("static")
 
     def with_cost_audit(state):
         # Report-only overlay: preserve immutable evaluator run.json bytes.
-        paths = [root / 'cost-audit.json']
+        report_root = repo.path(state['run_id']).parent.parent.parent
+        paths = [report_root / 'cost-audit.json']
         if state.get('mode') == 'supplement':
-            paths.append(root / 'supplement-cost-audit.json')
+            paths.append(report_root / 'supplement-cost-audit.json')
         for path in paths:
             if path.is_file():
                 audit = read_json(path)
                 value = (audit.get('runs') or {}).get(state.get('run_id'))
                 if isinstance(value, dict):
                     state = {**state, 'cost_audit': value}
-        validity_path = root / 'supplement-validity-audit.json'
+        validity_path = report_root / 'supplement-validity-audit.json'
         if state.get('mode') == 'supplement' and validity_path.is_file():
             value = (read_json(validity_path).get('runs') or {}).get(state.get('run_id'))
             if isinstance(value, dict):

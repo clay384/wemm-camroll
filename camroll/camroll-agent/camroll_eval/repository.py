@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 import shutil
 import threading
@@ -11,17 +12,20 @@ from .metrics import summary
 
 
 class Repository:
-    def __init__(self, root):
+    def __init__(self, root, *, history_roots=()):
         self.root = Path(root).resolve()
+        self.roots = (self.root, *(Path(path).resolve() for path in history_roots))
         self._cache = {}
         self._cache_lock = threading.RLock()
 
     def path(self, run_id):
         run_id = safe_id(run_id)
-        for kind in ("runs", "origins"):
-            path = self.root / kind / run_id / "run.json"
-            if path.is_file():
-                return path
+        matches = [root / kind / run_id / "run.json" for root in self.roots for kind in ("runs", "origins")
+                   if (root / kind / run_id / "run.json").is_file()]
+        if len(matches) > 1:
+            raise ValueError("ambiguous run identifier across report roots")
+        if matches:
+            return matches[0]
         raise FileNotFoundError("run not found")
 
     def load(self, run_id):
@@ -56,6 +60,10 @@ class Repository:
                 if (state.get("supplement_summary_version") != "http403-supplement-v1"
                         or not isinstance(state.get("summary"), dict)):
                     raise ValueError("supplement requires a versioned subset summary")
+            elif state.get("mode") == "gate_ab":
+                if (state.get("gate_summary_version") != "camroll-flash-gate-v1"
+                        or not isinstance(state.get("summary"), dict)):
+                    raise ValueError("gate report requires a versioned fixed-denominator summary")
             else:
                 state["summary"] = summary(state)
         self._cache[key] = (stamp, state)
@@ -74,7 +82,8 @@ class Repository:
                 'planned_turn_count', 'resumed_at', 'planned_eligible_qa_count',
                 'supplement_summary_version', 'supplement_complete', 'build_skipped',
                 'query_cache_policy', 'source_unchanged', 'pinned_snapshot_unchanged',
-                'wall_ms', 'stop_reason')
+                'wall_ms', 'stop_reason', 'inference_config', 'index_binding', 'gate_summary_version',
+                'gate_complete', 'gate_policy', 'gate_summary', 'seen_benchmark', 'suite_id')
         return {key: state.get(key) for key in keys if key in state}
 
     def get_brief(self, run_id):
@@ -85,7 +94,8 @@ class Repository:
         result = {key: value for key, value in state.items() if key not in {"items", "media_mapping", "qa_ids"}}
         result["items"] = [{key: row.get(key) for key in ("qa_id", "question", "answer", "task_type", "angle", "difficulty",
                            "answerability", "execution_status", "judge_status", "retrieval_precision",
-                           "retrieval_recall", "retrieval_f1", "agent_status", "wall_clock_ms")}
+                           "retrieval_recall", "retrieval_f1", "agent_status", "wall_clock_ms",
+                           "answer_origin", "execution_validity", "gate_status", "error_type")}
                            | {"judge": {key: (row.get("judge") or {}).get(key) for key in ("score", "reason", "judge_status")}}
                            for row in state.get("items", [])]
         present = {row["qa_id"] for row in result["items"]}
@@ -115,7 +125,7 @@ class Repository:
         if not light:
             return copy.deepcopy(value)
         omitted = {"model_call_metrics", "tool_trace", "runtime_turns", "conversation",
-                   "resume_history", "resume_last_response", "conversation_history"}
+                   "resume_history", "resume_last_response", "conversation_history", "gate_events", "gate_attempts"}
         result = {key: data for key, data in value.items() if key not in omitted}
         result["runtime_turns"] = [{key: data for key, data in turn.items() if key not in omitted}
                                    for turn in value.get("runtime_turns") or []]
@@ -123,11 +133,14 @@ class Repository:
         for key in ("model_call_metrics", "tool_trace"):
             result[key] = [self._trace_brief(record, index) for index, record in enumerate(value.get(key) or [])]
         result["trace_counts"] = {"model": len(result["model_call_metrics"]), "tool": len(result["tool_trace"])}
+        if "gate_events" in value:
+            result["gate_events"] = [self._trace_brief(record, index) for index, record in enumerate(value["gate_events"])]
+            result["trace_counts"]["gate"] = len(result["gate_events"])
         result["trace_payloads_deferred"] = True
         return copy.deepcopy(result)
 
     def item_trace(self, run_id, qa_id, kind, index):
-        key = {"model": "model_call_metrics", "tool": "tool_trace"}.get(kind)
+        key = {"model": "model_call_metrics", "tool": "tool_trace", "gate": "gate_events"}.get(kind)
         if key is None or index < 0:
             raise FileNotFoundError("trace not found")
         records = self._item_cached(run_id, qa_id).get(key) or []
@@ -137,8 +150,8 @@ class Repository:
 
     def list(self):
         rows = []
-        for kind in ("runs", "origins"):
-            for path in (self.root / kind).glob("*/run.json"):
+        for root, kind in ((root, kind) for root in self.roots for kind in ("runs", "origins")):
+            for path in (root / kind).glob("*/run.json"):
                 try:
                     rows.append(self.get_brief(path.parent.name))
                 except (OSError, ValueError):
@@ -197,6 +210,14 @@ class Repository:
             raise ValueError("supplement subsets are reported separately from formal comparisons")
         if any(state.get("formal_protocol") is False for state in states):
             raise ValueError("smoke runs are excluded from formal comparisons")
+        gate_comparison = any(state.get('mode') == 'gate_ab' for state in states)
+        if gate_comparison:
+            if not all(state.get('mode') == 'gate_ab' and state.get('protocol_label') == 'camroll-flash-gate-v1'
+                       for state in states):
+                raise ValueError('Gate protocol is reported separately from historical protocols')
+            bindings = {json.dumps(state.get('index_binding'), sort_keys=True) for state in states}
+            if len(bindings) != 1 or not states[0].get('index_binding'):
+                raise ValueError('Gate comparison requires the same immutable index binding')
         qa_ids = list(dict.fromkeys(row["qa_id"] for state in states for row in (state.get("qa_plan") or state.get("items", []))))
         plans = {row['qa_id']: row for state in states for row in state.get('qa_plan', [])}
         maps = [{row["qa_id"]: row for row in state.get("items", [])} for state in states]
@@ -217,5 +238,5 @@ class Repository:
         return copy.deepcopy({"runs": [self.brief(state) for state in states], "rows": rows,
                 "same_qa_hash": len(qa_hashes) == 1 and None not in qa_hashes,
                 "same_dataset_hash": len(dataset_hashes) == 1 and None not in dataset_hashes,
-                "comparison_scope": "contemporary_full_system_comparison" if contemporary else "historical_system_comparison",
-                "warning": "同期 M4 完整系统比较；不能单独归因于 embedding 或 reranker。" if contemporary else "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。"})
+                "comparison_scope": "frozen_index_flash_gate_comparison" if gate_comparison else "contemporary_full_system_comparison" if contemporary else "historical_system_comparison",
+                "warning": "冻结 WeMM 索引上的 Flash × Gate 对照。Doubao同时担任事实Gate和独立最终评分，存在模型关联。album3为已见基准，不代表独立泛化能力。" if gate_comparison else "同期 M4 完整系统比较；不能单独归因于 embedding 或 reranker。" if contemporary else "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。"})
