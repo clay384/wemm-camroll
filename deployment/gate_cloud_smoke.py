@@ -16,6 +16,120 @@ from gate_config import HISTORY_RUNTIME, MODELS, ORDER, PYTHON, RUNTIME, configu
 RELEASE = Path(__file__).resolve().parents[1]
 
 
+def synthetic_chain_acceptance(run, *, group):
+    """Accept complete, auditable execution without selecting error-free answers."""
+    from camroll_eval.gate_experiment import infrastructure_failure, valid_judgment, validator_failure
+    from camroll_agent.evidence_gate import ACTUAL_MODELS, STATUSES
+
+    issues = []
+    def require(condition, code):
+        if not condition and code not in issues:
+            issues.append(code)
+    model_stops = {'invalid_evidence_reference', 'final_response_error', 'invalid_tool_arguments',
+                   'protocol_error', 'no_progress', 'max_steps', 'view_image_limit', 'request_limit', 'timeout'}
+    on = group.endswith('-On')
+    profile = run.get('inference_config') or {}
+    require(group in ORDER and profile.get('group') == group
+            and profile.get('generation_model') == MODELS.get(group)
+            and profile.get('gate_policy') == ('repair-evidence-v1' if on else 'off'), 'inference_configuration')
+    require(run.get('mode') == 'gate_ab' and run.get('formal_protocol') is False, 'nonformal_gate_run_required')
+    require(run.get('status') in {'completed', 'completed_with_errors'}
+            and run.get('gate_complete') is True, 'incomplete_execution')
+    require(run.get('source_unchanged') is True, 'source_changed')
+    require(not run.get('finalization_errors') and not run.get('fatal_error') and not run.get('stop_reason'), 'run_fault')
+
+    plans = run.get('qa_plan') or []
+    items = run.get('items') or []
+    planned = {row.get('qa_id'): row.get('planned_turn_count') for row in plans}
+    require(run.get('qa_count') == 3 and run.get('planned_turn_count') == 3
+            and len(plans) == len(planned) == 3
+            and all(isinstance(key, str) and key and type(value) is int and value == 1
+                    for key, value in planned.items()), 'synthetic_plan_incomplete')
+    require(len(items) == 3 and len({item.get('qa_id') for item in items}) == 3
+            and {item.get('qa_id') for item in items} == set(planned), 'missing_or_duplicate_question')
+    turns = [turn for item in items for turn in item.get('runtime_turns', [])]
+    counts = {'planned_question_count': 3, 'planned_turn_count': 3, 'observed_question_count': len(items),
+              'executed_turn_count': len(turns), 'normal_model_turn_count': 0,
+              'model_contract_failure_turn_count': 0, 'gate_exhausted_turn_count': 0,
+              'infrastructure_failure_turn_count': 0, 'validator_failure_turn_count': 0,
+              'unclassified_failure_turn_count': 0, 'scored_model_turn_count': 0,
+              'expected_unscored_failure_turn_count': 0}
+    for item in items:
+        records = item.get('runtime_turns') or []
+        require(len(records) == planned.get(item.get('qa_id')) and [turn.get('index') for turn in records] == list(range(len(records)))
+                and item.get('final_turn_executed') is True, 'missing_or_duplicate_turn')
+        require(not infrastructure_failure(item), 'infrastructure_failure')
+        require(not validator_failure(item), 'validator_failure')
+        for turn in records:
+            origin, category = turn.get('answer_origin'), turn.get('failure_category')
+            require(turn.get('origin') == origin, 'inconsistent_origin')
+            require(not infrastructure_failure(turn), 'infrastructure_failure')
+            require(not turn.get('validator_failure_code'), 'validator_failure')
+            if origin == 'model':
+                counts['normal_model_turn_count'] += 1
+                require(category is None and turn.get('judge_eligible') is True
+                        and turn.get('agent_status') == 'complete'
+                        and turn.get('turn_outcome') in {'answer', 'refuse', 'clarify'}
+                        and turn.get('gate_status') == ('accepted' if on else 'off'), 'invalid_model_origin_metadata')
+                scored = turn.get('judge_status') == 'completed' and valid_judgment(turn)
+                counts['scored_model_turn_count'] += int(scored)
+                require(scored, 'missing_model_judgment')
+            else:
+                key = str(category) + '_turn_count'
+                counts[key if key in counts else 'unclassified_failure_turn_count'] += 1
+                known = (origin == 'system_failure' and category == 'model_contract_failure'
+                         and turn.get('termination_reason') in model_stops
+                         and turn.get('gate_status') == ('blocked' if on else 'off'))
+                exhausted = (on and origin == 'gate_exhausted' and category == 'gate_exhausted'
+                             and turn.get('termination_reason') == 'gate_exhausted'
+                             and turn.get('gate_status') == 'exhausted'
+                             and type(turn.get('gate_attempts')) is int and turn['gate_attempts'] >= 4
+                             and any(event.get('state') == 'exhausted' for event in turn.get('gate_events', [])))
+                require(known or exhausted, 'unaccepted_failure_origin')
+                skipped = (turn.get('judge_eligible') is False and turn.get('judge_status') == 'skipped_expected'
+                           and (turn.get('judge') or {}).get('score') is None
+                           and (turn.get('task_judge') or {}).get('correct') is None
+                           and (turn.get('task_judge') or {}).get('actual_action') is None)
+                counts['expected_unscored_failure_turn_count'] += int(skipped)
+                require(skipped and turn.get('agent_status') == 'error' and turn.get('turn_outcome') == 'error',
+                        'invalid_failure_bookkeeping')
+                require(not any(turn.get(key) for key in ('selected_asset_ids', 'predicted_images', 'predicted_media')),
+                        'failed_turn_delivers_assets')
+        if records:
+            final = records[-1]
+            require(all(item.get(key) == final.get(key) for key in ('origin', 'answer_origin', 'failure_category',
+                    'judge_eligible', 'judge_status', 'judge', 'task_judge', 'agent_status', 'turn_outcome', 'gate_status')),
+                    'inconsistent_final_item')
+            require(item.get('execution_status') == ('complete' if all(turn.get('judge_eligible') for turn in records) else 'error'),
+                    'inconsistent_execution_status')
+    require(not counts['infrastructure_failure_turn_count'], 'infrastructure_failure')
+    require(not counts['validator_failure_turn_count'], 'validator_failure')
+    calls = [call for item in items for call in item.get('model_call_metrics', [])]
+    roles = {call.get('original_call_type') or call.get('call_type') for call in calls
+             if call.get('status') in {'ok', 'success', 'completed', 'complete'} and not call.get('replayed')}
+    require({'view', 'final_review'} <= roles, 'missing_successful_view_final_chain')
+    facts = [event for item in items for event in item.get('gate_events', [])
+             if event.get('state') == 'evidence_checked' and event.get('reused_verdict') is not True]
+    valid_calls = {call.get('call_id'): call for call in calls
+                   if (call.get('original_call_type') or call.get('call_type')) == 'evidence_gate'
+                   and call.get('status') == 'complete' and call.get('parse_status') == 'valid'
+                   and call.get('api_sent') is True and call.get('replayed') is not True
+                   and call.get('response_model') in ACTUAL_MODELS}
+    integrated_facts = sum((event.get('verdict') or {}).get('status') in STATUSES and any(
+        valid_calls.get(identifier, {}).get('verdict_status') == (event.get('verdict') or {}).get('status')
+        for identifier in event.get('verifier_call_ids', [])) for event in facts)
+    metrics = (run.get('summary') or {}).get('gate') or {}
+    if on:
+        require(integrated_facts > 0 and integrated_facts == len(facts)
+                and metrics.get('valid_fact_verdict_count') == integrated_facts, 'missing_integrated_fact_gate')
+    else:
+        require(not facts and not valid_calls and metrics.get('valid_fact_verdict_count', 0) == 0, 'unexpected_fact_gate_off')
+    return {'passed': not issues, 'issues': issues, 'roles': sorted(str(role) for role in roles),
+            'execution_counts': counts, 'integrated_fact_verdict_count': integrated_facts,
+            'answer_correctness_required': False,
+            'measured_failure_policy': 'Model contract failures and Gate exhaustion remain unscored failures; acceptance validates execution, not answer quality.'}
+
+
 def fixtures():
     from PIL import Image, ImageDraw
     from camroll_eval.common import atomic_json
@@ -139,14 +253,12 @@ def run_checks(smoke_id):
             run = GateRunner(evaluation, source, albums).run_gate(run_id=smoke_id + '-' + group.lower(),
                 suite_id=smoke_id, group=group, source_album_id=parent['album_id'], source_run_id=parent['run_id'],
                 expected_snapshot=parent['index_version'], strict=False)
-            calls = [call for item in run['items'] for call in item.get('model_call_metrics', [])]
-            roles = {call.get('original_call_type') or call.get('call_type') for call in calls if call.get('status') in ('ok', 'success', 'completed')}
-            valid = (bool(run.get('gate_complete')) and {'view', 'final_review'} <= roles
-                     and all(turn.get('answer_origin') == 'model' for item in run['items'] for turn in item.get('runtime_turns', [])))
-            report['groups'].append({'name': group, 'run_id': run['run_id'], 'status': 'passed' if valid else 'failed',
-                                     'roles': sorted(str(role) for role in roles), 'summary': run['summary']})
+            acceptance = synthetic_chain_acceptance(run, group=group)
+            report['groups'].append({'name': group, 'run_id': run['run_id'],
+                                     'status': 'passed' if acceptance['passed'] else 'failed',
+                                     'roles': acceptance['roles'], 'acceptance': acceptance, 'summary': run['summary']})
             save()
-            if not valid:
+            if not acceptance['passed']:
                 raise RuntimeError('real_backend_library_view_final_chain_failed_' + group)
         report['status'] = 'passed'
     except BaseException as exc:
