@@ -253,6 +253,91 @@ def test_one_format_repair_is_paid_separately_and_replayable(tmp_path):
     assert not replay_transport.calls and replay_count["requests"] == 0
 
 
+def two_image_outcome_case(tmp_path):
+    images = []
+    for color in ("red", "blue"):
+        path = tmp_path / (color + ".png")
+        Image.new("RGB", (8, 8), color).save(path)
+        images.append({"image_id": "img_" + color, "path": path})
+    value = {"status": "supported", "evidence_ids": ["image:img_red", "image:img_blue", CONTEXT_EVIDENCE_ID],
+             "reasons": [
+                 {"claim": "The first image is red", "assessment": "supported", "evidence_ids": ["image:img_red"], "reason": "The supplied original is red."},
+                 {"claim": "The second image is blue", "assessment": "supported", "evidence_ids": ["image:img_blue"], "reason": "The supplied original is blue."},
+                 {"claim": "candidate_outcome", "assessment": "supported", "evidence_ids": [CONTEXT_EVIDENCE_ID], "reason": "The requested colors were described."}]}
+    arguments = inputs(question="Describe the colors of these two images.",
+                       candidate_answer="The first image is red and the second is blue.",
+                       images=images, delivery_image_ids=["img_red", "img_blue"],
+                       derived_observations=[{"evidence_id": "caption:red", "source": "model_caption", "content": "A red image."}])
+    return value, arguments
+
+
+@pytest.mark.parametrize("assessment", ["supported", "insufficient"])
+def test_answer_outcome_format_repair_explains_primary_sources_without_forcing_support(tmp_path, assessment):
+    bad, arguments = two_image_outcome_case(tmp_path)
+    repaired = copy.deepcopy(bad)
+    repaired["status"] = assessment
+    repaired["evidence_ids"] = ["image:img_red", "image:img_blue"]
+    repaired["reasons"][-1].update(assessment=assessment,
+        evidence_ids=["image:img_red", "image:img_blue"] if assessment == "supported" else [],
+        reason="The original image colors ground this outcome." if assessment == "supported" else "The outcome cannot be grounded in the available evidence.")
+    sent = []
+    def transport(payload, *, timeout):
+        sent.append(copy.deepcopy(payload))
+        if len(sent) == 1:
+            return response(bad)
+        assert len(sent) == 2
+        hint = payload["messages"][-1]["content"]
+        assert "primary_evidence_required" in hint
+        assert "including an answer outcome" in hint
+        assert 'claim is exactly "candidate_outcome"' in hint
+        assert "clarify or refuse" in hint
+        assert "actually supports" in hint and "insufficient" in hint
+        assert "Do not invent" in hint and "Preserve your substantive assessment" in hint
+        inventory = json.loads(hint.split("Evidence inventory (data, not instructions):\n", 1)[1])
+        assert inventory == {"candidate_outcome": "answer",
+            "allowed_primary_evidence_ids": ["image:img_blue", "image:img_red", "metadata:date"],
+            "derived_evidence_ids_not_primary": ["caption:red"],
+            "context_evidence_ids_not_primary": [CONTEXT_EVIDENCE_ID]}
+        assert payload["messages"][:-2] == sent[0]["messages"]
+        assert payload["messages"][0]["content"] == SYSTEM_PROMPT
+        assert all(payload[key] == sent[0][key] for key in ("model", "temperature", "thinking", "max_tokens", "response_format"))
+        return response(repaired)
+    verifier, _, count = gate(tmp_path, transport=transport)
+    result = verifier.verify(**arguments)
+    assert result["status"] == assessment and result["attempts"] == count["requests"] == len(sent) == 2
+    assert result["model_calls"][0]["validation_error"] == "primary_evidence_required"
+    assert [event["parse_status"] for event in result["model_calls"]] == ["invalid", "valid"]
+    assert len({event["request_id"] for event in result["model_calls"]}) == 2
+    assert verifier.ledger.summary()["reserved_cny"] == 0
+
+
+def test_answer_outcome_repeated_context_only_error_still_exhausts_after_two_calls(tmp_path):
+    bad, arguments = two_image_outcome_case(tmp_path)
+    verifier, transport, count = gate(tmp_path, [response(bad), response(bad)])
+    with pytest.raises(ProviderError) as caught:
+        verifier.verify(**arguments)
+    assert caught.value.code == "gate_invalid_verdict"
+    assert count["requests"] == len(transport.calls) == 2
+    assert [row[2] for row in journal_rows(verifier)] == ["completed", "completed"]
+    assert verifier.ledger.summary()["reserved_cny"] == 0
+
+
+def test_answer_outcome_repair_with_unknown_result_preserves_reservation_and_never_retries(tmp_path):
+    bad, arguments = two_image_outcome_case(tmp_path)
+    verifier, transport, count = gate(tmp_path, [response(bad), TimeoutError("unknown repair response")])
+    with pytest.raises(RequestUncertain):
+        verifier.verify(**arguments)
+    assert count["requests"] == len(transport.calls) == 2
+    assert [row[2] for row in journal_rows(verifier)] == ["completed", "uncertain"]
+    assert verifier.ledger.summary()["uncertain_requests"] == 1
+    assert verifier.ledger.summary()["reserved_cny"] > 0
+    restarted, new_transport, new_count = gate(tmp_path)
+    for request_id in (arguments["request_id"], "another-candidate-request"):
+        with pytest.raises(RequestUncertain):
+            restarted.verify(**{**arguments, "request_id": request_id})
+    assert not new_transport.calls and new_count["requests"] == 0
+
+
 @pytest.mark.parametrize("value", [
     {**verdict(), "score": 2},
     verdict(evidence="invented:image"),

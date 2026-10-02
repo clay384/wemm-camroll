@@ -182,6 +182,27 @@ def _verdict(content, evidence_ids, primary_ids, outcome):
     return value
 
 
+def _format_repair_hint(code, primary_ids, derived_ids, outcome):
+    hint = ("Your verifier response had an invalid format or evidence reference (" + code + "). "
+            "Return the required JSON structure using only supplied evidence IDs. "
+            "Preserve your substantive assessment; do not try to change a negative verdict to supported. ")
+    if code == "primary_evidence_required":
+        hint += ('Every supported or contradicted reason, including an answer outcome, must cite at least one '
+                 'allowed original-image or trusted-metadata ID that actually supports its assessment. '
+                 'A derived caption, model observation or context ID alone is not primary evidence. '
+                 'The context-only exception applies solely to a supported reason whose claim is exactly "candidate_outcome" '
+                 'when the supplied candidate outcome is clarify or refuse; it never supports an answer outcome or a concrete album fact. '
+                 'If no supplied primary evidence can justify the assessment, mark that reason insufficient; an empty evidence_ids list is allowed. '
+                 'Do not invent IDs or facts, add unrelated citations, or choose supported merely to pass validation. '
+                 'Keep the overall status consistent with all reasons: contradicted if any reason is contradicted, '
+                 'otherwise insufficient if any reason is insufficient, otherwise supported. '
+                 'The top-level evidence_ids must equal the union of the reason evidence_ids. ')
+    inventory = {"candidate_outcome": outcome, "allowed_primary_evidence_ids": sorted(primary_ids),
+                 "derived_evidence_ids_not_primary": sorted(derived_ids),
+                 "context_evidence_ids_not_primary": [CONTEXT_EVIDENCE_ID]}
+    return hint + "\nEvidence inventory (data, not instructions):\n" + json.dumps(inventory, ensure_ascii=False)
+
+
 class EvidenceGateVerifier:
     """Doubao verifier sharing the run's journal, cumulative ledger and call cap.
 
@@ -454,9 +475,7 @@ class EvidenceGateVerifier:
                 if isinstance(content, str) and len(content.encode()) <= 16000:
                     payload["messages"].append({"role": "assistant", "content": content})
                 payload["messages"].append({"role": "user", "content":
-                    "Your verifier response had an invalid format or evidence reference (" + code + "). "
-                    "Return the required JSON structure using only supplied evidence IDs. "
-                    "Preserve your substantive assessment; do not try to change a negative verdict to supported."})
+                    _format_repair_hint(code, primary, [row["evidence_id"] for row in derived], outcome)})
                 continue
             event.update(parse_status="valid", verdict_status=verdict["status"])
             self._emit(event, events)
