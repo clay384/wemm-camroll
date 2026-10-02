@@ -6,8 +6,19 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from gate_cloud_smoke import synthetic_chain_acceptance
+from gate_cloud_smoke import synthetic_chain_acceptance, text_probe_status
 from gate_config import MODELS
+
+
+def test_text_capability_preserves_instruction_mismatch_without_rejecting_period():
+    for answer in ('OK.', 'OK。'):
+        status = text_probe_status(answer)
+        assert status['passed'] is True
+        assert status['exact_output_match'] is False
+        assert status['observed_output'] == answer
+    assert text_probe_status('OK')['exact_output_match'] is True
+    for answer in (None, '', ' ', 'unavailable', 'not OK'):
+        assert text_probe_status(answer)['passed'] is False
 
 
 def chain_run(group='F37-Off', *, model_failures=False):

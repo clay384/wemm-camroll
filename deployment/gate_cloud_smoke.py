@@ -16,6 +16,13 @@ from gate_config import HISTORY_RUNTIME, MODELS, ORDER, PYTHON, RUNTIME, configu
 RELEASE = Path(__file__).resolve().parents[1]
 
 
+def text_probe_status(content):
+    """A terminal period is instruction nonconformance, not missing text support."""
+    text = content.strip() if isinstance(content, str) else ''
+    return {'passed': text in {'OK', 'OK.', 'OK。'}, 'exact_output_match': text == 'OK',
+            'observed_output': text}
+
+
 def synthetic_chain_acceptance(run, *, group):
     """Accept complete, auditable execution without selecting error-free answers."""
     from camroll_eval.gate_experiment import infrastructure_failure, valid_judgment, validator_failure
@@ -198,7 +205,7 @@ def run_checks(smoke_id):
             with client.capture_calls(lambda event: append_jsonl(calls, event)):
                 response = client.chat([{'role': 'user', 'content': 'Reply exactly OK.'}], role='probe',
                                        max_tokens=64, request_id='text')
-                result['checks']['text'] = {'passed': (response.get('content') or '').strip() == 'OK', 'usage': response['_usage']}
+                result['checks']['text'] = {**text_probe_status(response.get('content')), 'usage': response['_usage']}
                 response = client.chat(image_messages('Name the colored shape in this picture.', [source / 'photos/red.jpg']),
                                        role='probe', max_tokens=128, request_id='image')
                 content = (response.get('content') or '').lower()
