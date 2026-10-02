@@ -579,7 +579,7 @@ class GateRunner(Runner):
             with claim.open("x") as stream:
                 json.dump({"run_id": run_id, "inference_fingerprint": profile.fingerprint, "created_at": now_iso()}, stream)
             claim.chmod(0o600)
-            self._path.mkdir(mode=0o700)
+            self._path.mkdir(mode=0o700, parents=True)
             integrity = dataset.integrity()
             self._state = {"run_id": run_id, "suite_id": suite_id, "system_id": "camroll_wemm", "mode": "gate_ab",
                 "protocol_label": PROTOCOL, "gate_summary_version": PROTOCOL, "formal_protocol": strict, "status": "preparing", "config": "M4",

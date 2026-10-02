@@ -140,6 +140,40 @@ def test_four_groups_use_original_index_fresh_context_and_own_judge_ids(gate_fix
         run_gate(gate_fixture, group=group, run_id="different-id")
 
 
+def test_fresh_destination_reads_separate_frozen_source_and_keeps_one_shot_claims(gate_fixture, tmp_path):
+    source_root = gate_fixture["root"]
+    source_before = file_hashes(source_root)
+    album_before = file_hashes(gate_fixture["memory"])
+    destination = tmp_path / "new-gate-evaluation"
+    assert not destination.exists()
+    fixture = {**gate_fixture, "root": destination}
+
+    state, backend, judges, engine = run_gate(fixture, source_evaluation_root=source_root)
+
+    assert state["status"] == "completed" and state["gate_complete"] is True
+    assert len(backend.questions) == 3 and len(judges[0].calls) == 6
+    assert engine._parent_path == gate_fixture["parent_path"]
+    assert engine._path == destination / "runs" / "gate-test"
+    assert engine._path.stat().st_mode & 0o777 == 0o700
+    assert read_json(engine._path / "run.json")["source_unchanged"] is True
+    assert Path(state["request_journal_path"]).parent == engine._path
+    claim = destination / "gate_claims" / "synthetic-suite" / "F37-Off.json"
+    assert read_json(claim)["run_id"] == "gate-test"
+
+    output_before = file_hashes(engine._path)
+    claim_before = claim.read_bytes()
+    repeated_backend = Backend()
+    for repeated_id in ("gate-test", "different-id"):
+        with pytest.raises((ValueError, FileExistsError)):
+            run_gate(fixture, run_id=repeated_id, backend=repeated_backend,
+                     source_evaluation_root=source_root)
+    assert repeated_backend.questions == []
+    assert file_hashes(engine._path) == output_before and claim.read_bytes() == claim_before
+    assert not (destination / "runs" / "different-id").exists()
+    assert file_hashes(source_root) == source_before
+    assert file_hashes(gate_fixture["memory"]) == album_before
+
+
 @pytest.mark.parametrize("failure", ["no_progress", "final_response_error", "invalid_evidence_reference"])
 def test_model_contract_failure_skips_only_affected_turn_and_keeps_multiturn_history(gate_fixture, failure):
     backend = Backend(responses={"which event": {"origin": "system_failure", "turn_outcome": "error", "stopped_reason": failure}})

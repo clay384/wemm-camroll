@@ -2,7 +2,9 @@
 
 本轮只调用 `qwen3.7-flash`、`qwen3.8-flash` 和独立 Doubao Seed 2.0 Lite。新入口不会执行 Max 测试。索引中历史生成模型仍原样保留，仅作为索引来源记录。
 
-固定顺序为 F37-Off、F37-On、F38-Off、F38-On；正式组共享快照 `bcc1cd1176ab39697c789a4f44c7426e`，不重新建库。新目录是 `.100:/home/realmagic/camroll-wemm/runtime/photobench-flash-gate-20261001`。原相册、原运行、历史费用和无效补测均不重写。
+固定顺序为 F37-Off、F37-On、F38-Off、F38-On；正式组共享快照 `bcc1cd1176ab39697c789a4f44c7426e`，不重新建库。新目录是 `.100:/home/realmagic/camroll-wemm/runtime/photobench-flash-gate-20261002`。原相册、原运行、历史费用和无效补测均不重写。
+
+`photobench-flash-gate-20261001` 保留首次启动的完整证据：真实小样通过，正式入口在首题和付费调用前因新评测根目录缺少 `runs/` 而失败，监督器已恢复。修复后使用上述新目录、重新验证源码和真实小样；不删除旧claim，不覆盖旧记录，也不把启动失败记作模型答题错误。
 
 ## 门槛与执行
 
