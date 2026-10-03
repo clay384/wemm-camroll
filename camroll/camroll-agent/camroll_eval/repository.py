@@ -113,6 +113,81 @@ class Repository:
             value = {**planned, "answer": "", "judge": {"score": None, "reason": "not_started"}, "runtime_turns": []}
         return value
 
+    def _item_with_audit(self, run_id, qa_id):
+        """Project durable Gate traces missing from a possibly interrupted run.
+
+        Only fixed sibling files and matching run/question/turn contexts are
+        read. Answers, scores, execution status and frozen summaries stay as
+        recorded; this overlay is never written back to the run or its cache.
+        """
+        value = self._item_cached(run_id, qa_id)
+        state = self._load_cached(run_id)
+        if state.get('mode') != 'gate_ab':
+            return value
+        plan = next((row for row in state.get('qa_plan', []) if row.get('qa_id') == qa_id), {})
+        turn_count = plan.get('planned_turn_count')
+        if type(turn_count) is not int or turn_count <= 0:
+            return value
+        result = dict(value)
+        directory = self.path(run_id).parent
+        files = (('gate_events.jsonl', 'gate_events'), ('model_calls.jsonl', 'model_call_metrics'),
+                 ('verifier_calls.jsonl', 'model_call_metrics'))
+        seen, added, issues = {}, 0, []
+
+        def identity(record, field, turn):
+            if field == 'model_call_metrics' and record.get('call_id'):
+                return (turn, record['call_id'], record.get('request_id'), bool(record.get('replayed')))
+            payload = {key: data for key, data in record.items()
+                       if key not in {'evaluation_context', 'turn_index', 'report_audit'}}
+            return (turn, json.dumps(payload, sort_keys=True, ensure_ascii=False))
+
+        for filename, field in files:
+            path = directory / filename
+            if path.is_symlink() or path.resolve().parent != directory.resolve():
+                issues.append({'source': filename, 'issue': 'unsafe_trace_path'})
+                continue
+            if not path.is_file():
+                continue
+            if field not in seen:
+                result[field] = list(value.get(field) or [])
+                seen[field] = {identity(row, field, row.get('turn_index', row.get('conversation_turn', 0)))
+                               for row in result[field]}
+            try:
+                # Decode one physical line at a time: a partial UTF-8 tail
+                # must not hide earlier valid records in the same read buffer.
+                with path.open('rb') as stream:
+                    for line in stream:
+                        if not line.strip():
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except ValueError:
+                            issues.append({'source': filename, 'issue': 'incomplete_or_invalid_record'})
+                            continue
+                        if not isinstance(record, dict):
+                            continue
+                        context = record.get('evaluation_context')
+                        if not isinstance(context, dict):
+                            continue
+                        turn = context.get('turn_index')
+                        if (context.get('run_id') != run_id or context.get('qa_id') != qa_id
+                                or type(turn) is not int or not 0 <= turn < turn_count):
+                            continue
+                        key = identity(record, field, turn)
+                        if key in seen[field]:
+                            continue
+                        seen[field].add(key)
+                        result[field].append({**record,
+                            'turn_index' if field == 'gate_events' else 'conversation_turn': turn,
+                            'report_audit': {'source': filename, 'not_in_run_snapshot': True}})
+                        added += 1
+            except (OSError, UnicodeError):
+                issues.append({'source': filename, 'issue': 'trace_unreadable'})
+        if added or issues:
+            result['trace_audit'] = {'read_only': True, 'supplemented_count': added, 'issues': issues,
+                'note': 'Durable traces absent from run.json; no missing answer, score or execution outcome is inferred.'}
+        return result
+
     @staticmethod
     def _trace_brief(record, index):
         omitted = {"input", "output", "context", "args", "arguments", "result", "response", "messages"}
@@ -121,7 +196,7 @@ class Repository:
                 "trace_index": index}
 
     def item(self, run_id, qa_id, *, light=False):
-        value = self._item_cached(run_id, qa_id)
+        value = self._item_with_audit(run_id, qa_id)
         if not light:
             return copy.deepcopy(value)
         omitted = {"model_call_metrics", "tool_trace", "runtime_turns", "conversation",
@@ -143,7 +218,7 @@ class Repository:
         key = {"model": "model_call_metrics", "tool": "tool_trace", "gate": "gate_events"}.get(kind)
         if key is None or index < 0:
             raise FileNotFoundError("trace not found")
-        records = self._item_cached(run_id, qa_id).get(key) or []
+        records = self._item_with_audit(run_id, qa_id).get(key) or []
         if index >= len(records):
             raise FileNotFoundError("trace not found")
         return copy.deepcopy(records[index])

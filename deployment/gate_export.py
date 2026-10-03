@@ -15,13 +15,17 @@ from camroll_eval.common import atomic_json, now_iso, read_json
 def journal_requests(path):
     if not path.is_file():
         return [], [{'kind': 'request_journal_missing'}]
-    connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
+    connection = None
     try:
+        connection = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)
         connection.execute('PRAGMA query_only=ON')
         rows = connection.execute('SELECT request_id,call_id,status,payload_hash,error_code FROM cloud_requests').fetchall()
         return [dict(zip(('request_id', 'call_id', 'status', 'payload_hash', 'error_code'), row)) for row in rows], []
+    except (sqlite3.Error, OSError):
+        return [], [{'kind': 'request_journal_unreadable'}]
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
 
 
 def paired_deltas(groups):
@@ -74,7 +78,8 @@ def export(runtime=RUNTIME, *, ledger_path=None):
         directory = runtime / 'evaluation/runs' / planned['run_id']
         path = directory / 'run.json'
         if not path.is_file():
-            groups.append({**planned, 'acceptance_complete': False, 'summary': {
+            groups.append({**planned, 'execution_complete': False, 'delivery_complete': False,
+                           'acceptance_complete': False, 'summary': {
                 'quality_distribution_planned': {'correct': 0, 'partial': 0, 'incorrect': 0, 'unscored': 100},
                 'quality_correct_planned_rate': 0., 'quality_mean_fixed_planned': 0., 'quality_mean_scored': None,
                 'retrieval_precision_macro': 0., 'retrieval_recall_macro': 0., 'retrieval_f1_macro': 0.,
@@ -97,9 +102,18 @@ def export(runtime=RUNTIME, *, ledger_path=None):
         audit['attribution_assumption'] = 'Every cloud request in the exclusive run journal, including repairs, verifier and final Judge; no historical build or smoke calls.'
         audit['journal_statuses'] = {status: sum(row['status'] == status for row in journal)
                                      for status in sorted({row['status'] for row in journal})}
+        # Attribution can be complete while a known request still holds funds.
+        # Delivery requires both durable terminal requests and settled costs.
+        audit['settlement_complete'] = bool(audit['complete'] and journal
+            and all(row['status'] in {'completed', 'failed'} for row in journal)
+            and all(row['status'] in {'settled', 'released'} for row in ledger['rows'].values())
+            and audit['known_reserved_cny'] == 0 and audit['uncertain_requests'] == 0)
         audit['gate_overhead'] = gate_overhead(run, calls, ledger)
         audits[run['run_id']] = audit
-        groups.append({**planned, 'status': run['status'], 'acceptance_complete': planned.get('returncode') == 0 and validate_run(run),
+        execution_complete = planned.get('returncode') == 0 and validate_run(run)
+        delivery_complete = execution_complete and audit['settlement_complete']
+        groups.append({**planned, 'status': run['status'], 'execution_complete': execution_complete,
+                       'delivery_complete': delivery_complete, 'acceptance_complete': delivery_complete,
                        'summary': run['summary'], 'inference_config': run['inference_config'],
                        'index_binding': run.get('index_binding'), 'cost_audit': audit,
                        'calls_and_tokens': _usage(_unique_calls(calls)), 'resources': run.get('resource_summary'),
@@ -107,12 +121,14 @@ def export(runtime=RUNTIME, *, ledger_path=None):
                        'all_attempts': str(directory / 'gate_events.jsonl'),
                        'request_journal': str(directory / 'request-journal.sqlite'),
                        'full_answers_and_traces': str(directory / 'results.jsonl')})
-    complete = (tuple(row['name'] for row in groups) == ORDER and all(row['acceptance_complete'] for row in groups)
+    execution_complete = tuple(row['name'] for row in groups) == ORDER and all(row['execution_complete'] for row in groups)
+    complete = (execution_complete and all(row['delivery_complete'] for row in groups)
                 and suite.get('restoration', {}).get('state') == 'restored'
                 and suite.get('status') == 'passed' and suite.get('model_files_unchanged') is True
                 and suite.get('frozen_inputs_unchanged') is True)
     report = {'schema_version': 'camroll-flash-gate-report-v1', 'observed_at': now_iso(),
               'status': 'complete' if complete else 'incomplete', 'acceptance_complete': complete,
+              'execution_complete': execution_complete, 'delivery_complete': complete,
               'groups': groups, 'paired_comparisons': paired_deltas(groups), 'restoration': suite.get('restoration'),
               'budget_before': suite.get('budget_before'), 'budget_after': suite.get('budget_after'),
               'actual_subscription_bill_cny': None, 'actual_bill_status': 'unavailable',

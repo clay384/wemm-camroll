@@ -61,6 +61,12 @@ Promise.resolve(vm.runInContext(process.argv[3], context)).then(result => {
     return json.loads(result.stdout)
 
 
+def test_expected_skips_never_appear_as_pending_grades_during_an_active_run():
+    result = evaluate("""({skip:judgeLabel(null,'skipped_expected','evaluating'),
+      pending:judgeLabel(null,'pending','evaluating'),scored:judgeLabel(2,'completed','evaluating')})""")
+    assert result == {'skip': '未评分（按协议跳过）', 'pending': '待评分', 'scored': '2 分'}
+
+
 def test_read_only_health_hides_and_guards_mutation_controls():
     result = evaluate("""(async()=>{
       applyHealth({read_only:true}); renderRuns(); await $('#start').handlers.click();

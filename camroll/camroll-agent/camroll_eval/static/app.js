@@ -32,6 +32,7 @@ function legacyE2EInvalid(r){
 const e2eLabel=r=>['reuse','repair','supplement','gate_ab'].includes(r.mode)?'不适用（未建库）':legacyE2EInvalid(r)?'旧估算不适用':duration(r.summary?.benchmark_e2e_latency_excluding_judge_ms);
 function judgeLabel(score,judgeStatus,runStatus){
   if([0,1,2].includes(score))return `${score} 分`;
+  if(judgeStatus==='skipped_expected')return '未评分（按协议跳过）';
   return alive(runStatus)&&!['failed','incomplete','cancelled','skipped'].includes(judgeStatus)?'待评分':'未评分';
 }
 async function api(path,options={}){const response=await fetch(path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});let body;try{body=await response.json();}catch{body={detail:'响应格式异常'};}if(!response.ok)throw Error(body.detail||body.error||'请求失败');return body;}
@@ -188,6 +189,7 @@ async function openItem(run,qa){
     <details><summary>时延、终态与协议统计</summary><pre>${esc(JSON.stringify({timing:item.timing_breakdown,agent_stability:item.agent_stability,termination_reason:item.termination_reason,agent_status:item.agent_status,execution_status:item.execution_status,error_type:item.error_type,error:item.error,fatal_error:item.fatal_error},null,2))}</pre></details>
     ${traceSection(item.model_call_metrics||[],'model')}
     ${traceSection(item.tool_trace||[],'tool')}
+    ${item.trace_audit?`<p class="notice">断点审计补充 ${num(item.trace_audit.supplemented_count,0)} 条已持久化轨迹；这些记录尚未进入运行快照，不据此补造答案、评分或执行结果。${item.trace_audit.issues?.length?'部分轨迹记录不完整，保留异常状态。':''}</p>`:''}
     ${item.gate_events?traceSection(item.gate_events,'gate'):''}
     <details><summary>Judge完整输入 / 输出</summary><pre>${esc(JSON.stringify({answer:item.judge,task:item.task_judges},null,2))}</pre></details>`;
     document.querySelectorAll('#item-content [data-trace-kind]').forEach(details=>details.addEventListener('toggle',()=>loadTrace(details,base)));
