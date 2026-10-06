@@ -24,7 +24,14 @@ MODEL = "doubao-seed-2.0-lite"
 ACTUAL_MODELS = {MODEL, "doubao-seed-2-0-lite-260215"}
 PROTOCOL_VERSION = "camroll-evidence-gate-v1"
 CONTEXT_LIMIT = 262144
-IMAGE_TOKEN_BOUND = 32768
+# Seed 2.0 Lite 260215/260428 have a 224k input cap inside the 256k context.
+# https://docs.volcengine.com/docs/82379/1553576?lang=zh
+INPUT_TOKEN_LIMIT = 229376
+# Seed 2.0 defaults to high (1280 tokens/image); even xhigh is at most 5120.
+# Keep headroom without treating six ordinary images as 196608 input tokens.
+# https://docs.volcengine.com/docs/ark/image-understanding (checked 2026-10-06)
+# Image preprocessing/detail and the full-window cost reservation are unchanged.
+IMAGE_TOKEN_BOUND = 8192
 MAX_IMAGES = 6
 MAX_TOKENS = 2048
 CONTEXT_EVIDENCE_ID = "context:question_and_evidence_availability"
@@ -76,6 +83,12 @@ answer, invent evidence, assign a score, or request additional tools. No markdow
 """
 
 
+class EvidenceGateInputError(ValueError):
+    """Invalid verifier input/configuration, never a model-output repair case."""
+
+    code = "gate_input_error"
+
+
 def _hash(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                     separators=(",", ":")).encode()).hexdigest()
@@ -87,19 +100,19 @@ def _secret():
     if filename:
         path = Path(filename).expanduser()
         if not path.is_file() or path.stat().st_mode & 0o077:
-            raise ValueError(name + "_FILE must be an owner-only regular file")
+            raise EvidenceGateInputError(name + "_FILE must be an owner-only regular file")
         value = path.read_text().strip()
     else:
         value = os.environ.get(name, "").strip()
     if not value or "\n" in value or "\r" in value:
-        raise ValueError(name + " is not configured")
+        raise EvidenceGateInputError(name + " is not configured")
     return value
 
 
 def _no_reference_fields(value):
     if isinstance(value, dict):
         if any(str(key).casefold() in _FORBIDDEN_FIELDS for key in value):
-            raise ValueError("reference fields are not accepted by the evidence gate")
+            raise EvidenceGateInputError("reference fields are not accepted by the evidence gate")
         for child in value.values():
             _no_reference_fields(child)
     elif isinstance(value, list):
@@ -109,26 +122,26 @@ def _no_reference_fields(value):
 
 def _evidence_rows(values, kind, image_ids):
     if not isinstance(values, list) or len(values) > 64:
-        raise ValueError("evidence must be a bounded list")
+        raise EvidenceGateInputError("evidence must be a bounded list")
     result = []
     for row in values:
         allowed = {"evidence_id", "image_id", "source", "fields"} | ({"content"} if kind == "derived" else set())
         if not isinstance(row, dict) or set(row) - allowed:
-            raise ValueError("unexpected evidence fields")
+            raise EvidenceGateInputError("unexpected evidence fields")
         identifier, source = row.get("evidence_id"), row.get("source")
         if not isinstance(identifier, str) or not _IDENTIFIER.fullmatch(identifier):
-            raise ValueError("evidence_id must be a bounded identifier")
+            raise EvidenceGateInputError("evidence_id must be a bounded identifier")
         if not isinstance(source, str) or not source.strip() or len(source) > 180:
-            raise ValueError("evidence provenance is required")
-        if row.get("image_id") is not None and row["image_id"] not in image_ids:
-            raise ValueError("evidence refers to an image outside the supplied images")
+            raise EvidenceGateInputError("evidence provenance is required")
+        if row.get("image_id") is not None and (not isinstance(row["image_id"], str) or row["image_id"] not in image_ids):
+            raise EvidenceGateInputError("evidence refers to an image outside the supplied images")
         fields = row.get("fields")
         if fields is not None and not isinstance(fields, dict):
-            raise ValueError("evidence fields must be an object")
+            raise EvidenceGateInputError("evidence fields must be an object")
         if kind == "trusted" and (not fields or set(fields) - _TRUSTED_FIELDS):
-            raise ValueError("only explicit trusted metadata fields are accepted")
+            raise EvidenceGateInputError("only explicit trusted metadata fields are accepted")
         if kind == "derived" and not fields and not isinstance(row.get("content"), str):
-            raise ValueError("derived evidence needs fields or content")
+            raise EvidenceGateInputError("derived evidence needs fields or content")
         _no_reference_fields(row)
         result.append(copy.deepcopy(row))
     return result
@@ -217,21 +230,21 @@ class EvidenceGateVerifier:
                  request_journal_path=None, transport=None, on_call=None, url=None,
                  api_key=None, expected_limit_cny=600, sleep=time.sleep, clock=time.monotonic):
         if expected_limit_cny != 600:
-            raise ValueError("evidence gate requires the existing 600 CNY budget guard")
+            raise EvidenceGateInputError("evidence gate requires the existing 600 CNY budget guard")
         source_ledger = ledger or getattr(client, "ledger", None)
         if source_ledger is None:
             path = os.environ.get("CAMROLL_BUDGET_DB")
             if not path or not Path(path).expanduser().is_file():
-                raise ValueError("existing CAMROLL_BUDGET_DB is required")
+                raise EvidenceGateInputError("existing CAMROLL_BUDGET_DB is required")
             source_ledger = BudgetLedger(path, expected_limit_cny=600)
         self.ledger = BudgetLedger(source_ledger.path, expected_limit_cny=600)
         self.ledger.check_limit()
         self.request_namespace = request_namespace or getattr(client, "request_namespace", None)
         if not isinstance(self.request_namespace, str) or len(self.request_namespace) > 96 or not _IDENTIFIER.fullmatch(self.request_namespace):
-            raise ValueError("explicit run request namespace is required")
+            raise EvidenceGateInputError("explicit run request namespace is required")
         journal_path = request_journal_path or getattr(getattr(client, "journal", None), "path", None)
         if not journal_path or Path(journal_path).resolve() == self.ledger.path.resolve():
-            raise ValueError("a separate run request journal is required")
+            raise EvidenceGateInputError("a separate run request journal is required")
         self.journal = RequestJournal(journal_path)
         self.transport, self.on_call = transport, on_call
         self._hook = getattr(client, "_gate_request_budget_hook", None)
@@ -241,10 +254,13 @@ class EvidenceGateVerifier:
         if not self.url.endswith("/chat/completions"):
             self.url += "/chat/completions" if self.url.endswith(("/v1", "/v2", "/v3")) else "/v1/chat/completions"
         self._key = api_key if api_key is not None else (_secret() if transport is None else None)
-        self.input_rate = max(1.8, float(os.getenv("CAMROLL_EVAL_JUDGE_INPUT_CNY_PER_MILLION", "1.8")))
-        self.output_rate = max(10.8, float(os.getenv("CAMROLL_EVAL_JUDGE_OUTPUT_CNY_PER_MILLION", "10.8")))
+        try:
+            self.input_rate = max(1.8, float(os.getenv("CAMROLL_EVAL_JUDGE_INPUT_CNY_PER_MILLION", "1.8")))
+            self.output_rate = max(10.8, float(os.getenv("CAMROLL_EVAL_JUDGE_OUTPUT_CNY_PER_MILLION", "10.8")))
+        except ValueError:
+            raise EvidenceGateInputError("invalid verifier prices") from None
         if not all(math.isfinite(value) for value in (self.input_rate, self.output_rate)):
-            raise ValueError("invalid verifier prices")
+            raise EvidenceGateInputError("invalid verifier prices")
 
     def protocol(self):
         return {"version": PROTOCOL_VERSION, "model": MODEL, "url": self.url,
@@ -256,7 +272,7 @@ class EvidenceGateVerifier:
         if deadline is None:
             return 180.0
         if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
-            raise ValueError("deadline must be an absolute monotonic timestamp")
+            raise EvidenceGateInputError("deadline must be an absolute monotonic timestamp")
         left = deadline - self._clock()
         if left <= 0:
             raise DeadlineExceeded()
@@ -388,7 +404,7 @@ class EvidenceGateVerifier:
                derived_observations=None, request_id, deadline=None, request_budget_hook=None):
         hook = request_budget_hook or self._hook
         if not callable(hook):
-            raise ValueError("shared actual-request budget hook is required")
+            raise EvidenceGateInputError("shared actual-request budget hook is required")
         scope = self._scope()
         if scope is not None:
             scope_deadline = getattr(scope, "deadline", None)
@@ -398,36 +414,38 @@ class EvidenceGateVerifier:
                 self._remaining(deadline)
                 deadline = scope_deadline if deadline is None else min(deadline, scope_deadline)
         if not isinstance(request_id, str) or not request_id or len(request_id) > 1000:
-            raise ValueError("stable gate request_id is required")
-        if any(not isinstance(value, str) or not value.strip() for value in (question, candidate_answer)) or outcome not in {"answer", "clarify", "refuse"}:
-            raise ValueError("question, candidate answer and valid outcome are required")
+            raise EvidenceGateInputError("stable gate request_id is required")
+        if any(not isinstance(value, str) or not value.strip() for value in (question, candidate_answer)) or not isinstance(outcome, str) or outcome not in {"answer", "clarify", "refuse"}:
+            raise EvidenceGateInputError("question, candidate answer and valid outcome are required")
         if not isinstance(images, list) or len(images) > MAX_IMAGES:
-            raise ValueError("at most six current evidence images are allowed")
+            raise EvidenceGateInputError("at most six current evidence images are allowed")
         image_ids, paths = [], []
         for row in images:
             if not isinstance(row, dict) or set(row) != {"image_id", "path"}:
-                raise ValueError("images require only image_id and path")
+                raise EvidenceGateInputError("images require only image_id and path")
             if not isinstance(row["image_id"], str) or not _IDENTIFIER.fullmatch(row["image_id"]):
-                raise ValueError("invalid image identifier")
+                raise EvidenceGateInputError("invalid image identifier")
+            if not isinstance(row["path"], (str, Path)) or not str(row["path"]):
+                raise EvidenceGateInputError("evidence image paths must be nonempty strings or Paths")
             image_ids.append(row["image_id"])
             paths.append(row["path"])
         if len(set(image_ids)) != len(image_ids):
-            raise ValueError("duplicate image identifiers")
+            raise EvidenceGateInputError("duplicate image identifiers")
         delivery = [] if delivery_image_ids is None else delivery_image_ids
         if (not isinstance(delivery, list)
                 or any(not isinstance(identifier, str) or not _IDENTIFIER.fullmatch(identifier) for identifier in delivery)
                 or len(set(delivery)) != len(delivery)
                 or not set(delivery) <= set(image_ids)):
-            raise ValueError("delivery image identifiers must be unique and belong to the supplied images")
+            raise EvidenceGateInputError("delivery image identifiers must be unique and belong to the supplied images")
         if outcome in {"clarify", "refuse"} and delivery:
-            raise ValueError("clarification and refusal cannot deliver images")
+            raise EvidenceGateInputError("clarification and refusal cannot deliver images")
         delivery = list(delivery)
-        trusted = _evidence_rows(trusted_metadata or [], "trusted", set(image_ids))
-        derived = _evidence_rows(derived_observations or [], "derived", set(image_ids))
+        trusted = _evidence_rows([] if trusted_metadata is None else trusted_metadata, "trusted", set(image_ids))
+        derived = _evidence_rows([] if derived_observations is None else derived_observations, "derived", set(image_ids))
         primary = {"image:" + identifier for identifier in image_ids} | {row["evidence_id"] for row in trusted}
         all_ids = [CONTEXT_EVIDENCE_ID] + ["image:" + identifier for identifier in image_ids] + [row["evidence_id"] for row in trusted + derived]
         if len(set(all_ids)) != len(all_ids):
-            raise ValueError("evidence identifiers must be unique across all sources")
+            raise EvidenceGateInputError("evidence identifiers must be unique across all sources")
         data = {"question": question, "candidate_answer": candidate_answer, "candidate_outcome": outcome,
                 "raw_images_in_order": [{"image_id": identifier, "evidence_id": "image:" + identifier} for identifier in image_ids],
                 "actual_delivery_image_ids": delivery,
@@ -437,17 +455,25 @@ class EvidenceGateVerifier:
                     "raw_image_count": len(image_ids), "trusted_metadata_count": len(trusted),
                     "derived_observation_count": len(derived),
                     "scope": "Question and supplied-evidence availability only; no unseen album facts."}}
-        text = json.dumps(data, ensure_ascii=False, allow_nan=False)
-        if len(text.encode()) > 48000:
-            raise ValueError("evidence text exceeds the bounded gate input")
+        try:
+            text = json.dumps(data, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            raise EvidenceGateInputError("evidence must be JSON serializable with finite values") from None
         self._remaining(deadline)
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + image_messages(text, paths)
+        try:
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + image_messages(text, paths)
+        except (OSError, TypeError, ValueError):
+            raise EvidenceGateInputError("evidence image inputs are invalid") from None
         payload = {"model": MODEL, "messages": messages, "temperature": 0,
                    "thinking": {"type": "disabled"}, "max_tokens": MAX_TOKENS,
                    "response_format": {"type": "json_object"}}
         events = []
         for attempt in range(2):
-            if _context_bound(payload["messages"]) > CONTEXT_LIMIT:
+            # One conservative budget covers complete UTF-8 evidence, every
+            # image, output and overhead, including a possible format repair.
+            # Never truncate evidence or apply a separate text-only ceiling.
+            bound = _context_bound(payload["messages"])
+            if bound > CONTEXT_LIMIT or bound - MAX_TOKENS > INPUT_TOKEN_LIMIT:
                 raise ProviderError("Evidence gate context bound exceeded", code="context_limit")
             response, event = self._request(payload, request_id, attempt, deadline, hook, events)
             choices = response.get("choices")

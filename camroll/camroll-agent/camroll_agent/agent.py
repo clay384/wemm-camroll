@@ -20,6 +20,7 @@ from camroll_agent.prompts import (SYSTEM_PROMPT, SYSTEM_PROMPT_FREEFORM_SUFFIX,
 from camroll_agent.schemas import TOOLS, ToolValidationError, validate_arguments, validate_schema
 from camroll_agent.gate import (POLICY, REPAIR_BY_CATEGORY, OutputGate, GateViolation, GateExhausted,
                                 AssetBindingError, GatedVisionClient, digest)
+from camroll_agent.evidence_gate import EvidenceGateInputError
 
 DEFAULT_MAX_STEPS = 25
 DEFAULT_MAX_VIEW_IMAGE_CALLS = 5
@@ -157,6 +158,41 @@ def _known_images(records):
     for record in records.values():
         ids.update(i for i in record.get("image_ids", []) if isinstance(i, str) and i.startswith("img_"))
     return ids
+
+
+def _gate_visual_observation(result):
+    """Separate model observations from the tool's appended library records."""
+    if not isinstance(result, dict):
+        raise EvidenceGateInputError("view_image evidence must be an object")
+    if "error" in result:
+        return None
+    clean = public_evidence(result)
+    # tools.view_image appends this copy of library metadata after the VLM
+    # response. Reviewed metadata/captions are supplied separately below; they
+    # are not another visual observation. Keep every other extension verbatim.
+    clean.pop("images", None)
+    try:
+        ids = clean["image_ids"]
+        validate_schema(ids, {"type": "array", "minItems": 1, "maxItems": 6, "uniqueItems": True,
+            "items": {"type": "string", "pattern": "^img_[A-Za-z0-9_-]+$"}}, "view_image.image_ids")
+        if not isinstance(clean["analysis"], str) or not isinstance(clean["limitations"], str):
+            raise ValueError("invalid visual text")
+        evidence = clean["evidence"]
+        if not isinstance(evidence, list) or len(evidence) > len(ids):
+            raise ValueError("invalid visual evidence")
+        evidence_ids = []
+        for row in evidence:
+            if not isinstance(row, dict) or row.get("image_id") not in ids or not isinstance(row.get("observation"), str):
+                raise ValueError("invalid visual evidence source or observation")
+            evidence_ids.append(row["image_id"])
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("duplicate visual evidence sources")
+        regions = clean["target_regions"]
+        if not isinstance(regions, list) or any(not isinstance(row, dict) or row.get("image_id") not in ids for row in regions):
+            raise ValueError("invalid visual crop provenance")
+        return json.dumps(clean, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    except (KeyError, TypeError, ValueError):
+        raise EvidenceGateInputError("view_image evidence does not satisfy the tool result contract") from None
 
 
 def _evidence_records(result: Any) -> list[dict]:
@@ -308,6 +344,13 @@ class Agent:
     def _gate_batch(self, calls, records):
         """Validate all calls and read-only asset/crop bindings before any tool."""
         known = _known_images(records)
+        # Search can return a photo with an explicit event link before the
+        # event record itself is fetched. That returned link is valid evidence
+        # for get; do not open the rest of the index or scan prose for IDs.
+        known_get = known | set(records) | {
+            row["event_id"] for row in records.values()
+            if isinstance(row.get("event_id"), str) and re.fullmatch(r"ev_[A-Za-z0-9_-]+", row["event_id"])
+        }
         for call in calls:
             fn = call["function"]
             try:
@@ -318,8 +361,8 @@ class Agent:
                 raise GateViolation("invalid_tool_arguments", field=detail["field"], reason=detail["reason"],
                                     allowed=detail.get("allowed")) from None
             ids = args.get("image_ids", [])
-            if fn["name"] == "get" and args["id"] not in known | set(records):
-                raise GateViolation("unknown_evidence_id", field="arguments.id", allowed=sorted(known | set(records)))
+            if fn["name"] == "get" and args["id"] not in known_get:
+                raise GateViolation("unknown_evidence_id", field="arguments.id", allowed=sorted(known_get))
             if not set(ids) <= known:
                 raise GateViolation("unknown_evidence_id", field="arguments.image_ids", allowed=sorted(known))
             if fn["name"] == "view_image":
@@ -386,9 +429,13 @@ class Agent:
         if metadata.get("people_registry"):
             trusted.append({"evidence_id": "metadata:people", "source": "user_registered_identity_references",
                             "fields": {"identity": public_evidence(metadata["people_registry"])}})
-        for index, entry in enumerate(t for t in trace if t["tool"] == "view_image" and "error" not in t["result"]):
-            derived.append({"evidence_id": "observation:" + str(index), "source": "prior_model_visual_observation_not_primary",
-                            "content": json.dumps(public_evidence(entry["result"]), ensure_ascii=False)})
+        observation_index = 0
+        for entry in (t for t in trace if t["tool"] == "view_image"):
+            content = _gate_visual_observation(entry.get("result"))
+            if content is not None:
+                derived.append({"evidence_id": "observation:" + str(observation_index),
+                                "source": "prior_model_visual_observation_not_primary", "content": content})
+                observation_index += 1
         hook = getattr(self.llm, "_gate_request_budget_hook", None)
         if hook is None:
             raise RuntimeError("Gate verifier requires a shared physical request budget hook")

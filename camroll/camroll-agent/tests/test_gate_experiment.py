@@ -261,6 +261,24 @@ def test_off_preflight_error_metadata_blocks_before_later_questions(gate_fixture
     assert state["summary"]["model_contract_failure_turn_count"] == 0
 
 
+@pytest.mark.parametrize("error", [
+    {"exception_type": "EvidenceGateInputError", "error_code": "gate_input_error"},
+    {"exception_type": "EvidenceGateInputError"},
+])
+def test_gate_input_contract_fault_stops_group_without_model_attribution(gate_fixture, error):
+    backend = Backend(responses={"find photo": {"origin": "system_failure", "turn_outcome": "error",
+        "model_call_metrics": [], "tool_trace": [{"tool": "agent", "result": {"error": error}}]}})
+    state, backend, judges, _ = run_gate(gate_fixture, backend=backend, group="F37-On")
+    assert state["status"] == "blocked" and len(backend.questions) == 1 and not judges[0].calls
+    assert state["stop_reason"] == error.get("error_code", error["exception_type"])
+    assert state["summary"]["infrastructure_failure_turn_count"] == 1
+    assert state["summary"]["model_contract_failure_turn_count"] == 0
+    assert state["summary"]["validator_failure_turn_count"] == 0
+    assert state["items"][0]["runtime_turns"][0]["judge_status"] == "skipped_expected"
+    assert state["summary"]["unexecuted_turn_count"] == 2
+    assert state["planned_status"][1]["execution_status"] == "not_started"
+
+
 @pytest.mark.parametrize("code", ["http_401", "http_403", "request_uncertain", "usage_missing", "asset_binding_error",
                                  "response_model_mismatch", "gate_response_model_mismatch", "retrieval_backend_error"])
 def test_infrastructure_error_stops_new_questions_and_preserves_entire_plan(gate_fixture, code):

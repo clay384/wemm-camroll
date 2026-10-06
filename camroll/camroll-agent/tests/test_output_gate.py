@@ -120,6 +120,39 @@ def test_bad_batch_never_executes_valid_prefix_and_exhausts_exactly_four(tmp_pat
     assert not result.tool_trace or not any(x["tool"] == "search" for x in result.tool_trace)
 
 
+def test_search_image_event_reference_allows_get_of_the_returned_event(tmp_path, album):
+    library = album[1]
+    library.images["img_a"]["event_id"] = "ev_synthetic_returned"
+    library.events["ev_synthetic_returned"] = {"id": "ev_synthetic_returned", "kind": "event",
+        "name": "Synthetic red event", "description": "A synthetic red square.", "image_ids": ["img_a"]}
+    outcomes = [response(calls=[call("search", {"query": "red", "kind": "images"})]),
+        response(calls=[call("get", {"id": "ev_synthetic_returned"})]),
+        response(json.dumps({"answer": "red", "outcome": "answer", "selected_image_ids": ["img_a"]})),
+        response(json.dumps({"answer": "red", "outcome": "answer", "evidence_image_ids": ["img_a"]}))]
+    agent, _, sdk = agent_for(tmp_path, album, outcomes)
+    result = agent.ask("Describe the event for the red image.", structured_output=True)
+    assert result.stopped_reason == "ok" and result.origin == "model"
+    fetched = [row for row in result.tool_trace if row["tool"] == "get"]
+    assert len(fetched) == 1 and fetched[0]["result"]["id"] == "ev_synthetic_returned"
+    assert len(sdk.calls) == 4
+    assert not any(row.get("error", {}).get("code") == "unknown_evidence_id" for row in result.gate_events)
+
+
+@pytest.mark.parametrize("event_id", [None, "", [], {}, 0, True, "invalid", "ev_bad space", "ev_returned"])
+def test_get_event_allowlist_uses_only_valid_explicit_returned_event_ids(tmp_path, album, event_id):
+    from camroll_agent.gate import GateViolation
+    album[1].events["ev_unreturned"] = {"id": "ev_unreturned", "kind": "event", "image_ids": ["img_a"]}
+    records = copy.deepcopy(album[1].images)
+    records["img_a"].update(event_id=event_id, caption="Text mention ev_unreturned is not an explicit event reference.")
+    agent, _, sdk = agent_for(tmp_path, album, [])
+    agent._gate_batch([call("get", {"id": "img_a"})], records)
+    with pytest.raises(GateViolation) as caught:
+        agent._gate_batch([call("get", {"id": "ev_unreturned"})], records)
+    assert caught.value.detail["code"] == "unknown_evidence_id"
+    assert caught.value.detail["allowed"] == (["ev_returned", "img_a"] if event_id == "ev_returned" else ["img_a"])
+    assert not sdk.calls
+
+
 def test_known_id_missing_asset_is_implementation_failure_without_retry(tmp_path, album):
     outcomes = [response(calls=[call("search", {"query": "red"})]),
                 response(calls=[call("view_image", {"image_ids": ["img_a"], "prompt": "color"})])]
@@ -134,6 +167,110 @@ def final_chain(*finals):
     return [response(calls=[call("search", {"query": "red"})]),
             response(json.dumps({"answer": "unverified draft", "outcome": "answer", "selected_image_ids": ["img_a"]})),
             *[response(json.dumps({"outcome": "answer", **final})) for final in finals]]
+
+
+def test_verifier_input_fault_is_operational_not_a_candidate_repair(tmp_path, album):
+    from camroll_agent.evidence_gate import EvidenceGateInputError
+    from camroll_eval.gate_experiment import infrastructure_failure
+    class InvalidInputVerifier:
+        calls = 0
+        def verify(self, **kwargs):
+            self.calls += 1
+            raise EvidenceGateInputError("Synthetic evidence assembly is invalid")
+    verifier = InvalidInputVerifier()
+    agent, client, sdk = agent_for(tmp_path, album,
+        final_chain({"answer": "red", "evidence_image_ids": ["img_a"]}), verifier)
+    result = agent.ask("color?", structured_output=True)
+    assert result.origin == "system_failure" and "unverified draft" not in result.final_text
+    assert result.selected_image_ids == [] and verifier.calls == 1 and len(sdk.calls) == 3
+    assert infrastructure_failure({"tool_trace": result.tool_trace, "gate_events": result.gate_events}) == "gate_input_error"
+    assert result.gate_events[-1]["state"] == "blocked"
+    assert not any(event.get("attempt", 0) > 1 for event in result.gate_events)
+    assert client.usage_summary()["reserved_cny"] == 0
+
+
+def test_fact_gate_separates_five_visual_observations_from_six_repeated_library_records(tmp_path, album):
+    from camroll_agent.evidence_gate import EvidenceGateVerifier, SYSTEM_PROMPT
+    from camroll_agent.gate import OutputGate
+    from camroll_agent.prompts import public_evidence
+    library = album[1]
+    for index in range(6):
+        iid = "img_" + chr(ord("a") + index)
+        path = album[0] / "assets" / (iid + ".jpg")
+        Image.new("RGB", (12, 12), "red").save(path)
+        library.images[iid] = {"id": iid, "kind": "image", "path": str(path),
+            "date": "2026-10-01", "date_source": "synthetic_EXIF",
+            "caption": "caption " + str(index) + " 合成文字" * 100, "visible_text": "完整 OCR " + str(index),
+            "face_instances": [{"face_id": "face_" + str(index), "bbox": [1, 2, 7, 8],
+                "provenance": "登记资料" * 1000, "identity_status": "unknown"}]}
+    records = copy.deepcopy(library.images)
+    reviewed = list(records)
+    trace, expected_observations = [], []
+    for index in range(5):
+        result = {"analysis": ("第 " + str(index) + ' 次完整观察：保留空格、"引号"和换行。\n') * 100,
+            "evidence": [{"image_id": iid, "observation": "对应 " + iid + " 的全文观察。" * 30} for iid in reviewed],
+            "limitations": "原图与扩展裁剪可能包含其他人物；不可按外观猜身份。" * 20,
+            "image_ids": list(reviewed),
+            "target_regions": [{"image_id": iid, "face_id": "face_" + str(i),
+                "face_bbox": [1, 2, 7, 8], "crop_bbox": [0, 0, 12, 12],
+                "coordinate_space": "synthetic_original", "limitation": "登记匹配，仅作为裁剪来源"}
+                for i, iid in enumerate(reviewed)],
+            "future_observation_extension": {"full_text": "未来扩展不得无声丢弃。" * 50},
+            "images": public_evidence(list(records.values()))}
+        trace.append({"tool": "view_image", "result": result})
+        expected_observations.append({key: copy.deepcopy(value) for key, value in result.items() if key != "images"})
+    original_trace = copy.deepcopy(trace)
+    agent, client, sdk = agent_for(tmp_path, album, [])
+    calls = []
+    def transport(body, timeout):
+        calls.append(copy.deepcopy(body))
+        verdict = {"status": "supported", "evidence_ids": ["image:img_a"], "reasons": [
+            {"claim": "red", "assessment": "supported", "evidence_ids": ["image:img_a"], "reason": "The raw image is red."}]}
+        return {"model": "doubao-seed-2-0-lite-260215", "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+            "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": json.dumps(verdict)}}]}
+    agent.evidence_verifier = EvidenceGateVerifier(client=client, transport=transport)
+    with client.request_scope() as scope:
+        agent._gate_facts("Describe the synthetic colors.", {"answer": "red", "outcome": "answer", "evidence_image_ids": reviewed},
+            records, reviewed, trace, "synthetic-fact-assembly", scope, OutputGate("synthetic-turn"))
+    assert len(calls) == 1 and not sdk.calls
+    assert calls[0]["messages"][0]["content"] == SYSTEM_PROMPT
+    assert calls[0]["max_tokens"] == 2048 and calls[0]["temperature"] == 0
+    body = json.loads(calls[0]["messages"][1]["content"][0]["text"])
+    trusted = {row["image_id"]: row for row in body["trusted_metadata"]}
+    derived = body["derived_observations_not_independent_facts"]
+    assert set(trusted) == set(reviewed)
+    for iid in reviewed:
+        assert trusted[iid]["fields"] == {"date": records[iid]["date"], "date_source": records[iid]["date_source"],
+            "identity": public_evidence(records[iid]["face_instances"])}
+        caption = next(row for row in derived if row["evidence_id"] == "derived:" + iid)
+        assert caption["fields"] == {"caption": records[iid]["caption"], "visible_text": records[iid]["visible_text"]}
+    observations = [row for row in derived if row["evidence_id"].startswith("observation:")]
+    assert len(observations) == 5
+    assert [json.loads(row["content"]) for row in observations] == expected_observations
+    assert all(row["source"] == "prior_model_visual_observation_not_primary" for row in observations)
+    assert trace == original_trace
+    assert client.usage_summary()["reserved_cny"] == 0
+
+
+@pytest.mark.parametrize("change", [
+    None, {"analysis": []}, {"evidence": "invalid"}, {"image_ids": "img_a"},
+    {"evidence": [{"image_id": "img_missing", "observation": "wrong source"}]},
+    {"target_regions": {}}, {"target_regions": [{"image_id": "img_missing"}]},
+])
+def test_malformed_visual_evidence_assembly_is_an_input_fault_before_fact_request(tmp_path, album, change):
+    from camroll_agent.evidence_gate import EvidenceGateInputError
+    from camroll_agent.gate import OutputGate
+    verifier = Verifier()
+    agent, client, sdk = agent_for(tmp_path, album, [], verifier)
+    result = {"analysis": "red", "evidence": [{"image_id": "img_a", "observation": "red"}],
+        "limitations": "", "image_ids": ["img_a"], "target_regions": [], "images": []}
+    result = None if change is None else {**result, **change}
+    with client.request_scope() as scope, pytest.raises(EvidenceGateInputError) as caught:
+        agent._gate_facts("color?", {"answer": "red", "outcome": "answer"}, album[1].images,
+            ["img_a"], [{"tool": "view_image", "result": result}], "invalid-observation", scope, OutputGate("turn"))
+    assert caught.value.code == "gate_input_error"
+    assert not verifier.calls and not sdk.calls
+    assert client.usage_summary()["reserved_cny"] == client.usage_summary()["estimated_spent_cny"] == 0
 
 
 def test_final_facts_negative_repeats_exactly_once_then_frozen_repair(tmp_path, album):

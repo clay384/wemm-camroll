@@ -253,10 +253,10 @@ class GateBackend:
 
 FATAL_CODES = {"http_400", "http_401", "http_403", "http_404", "http_422", "context_limit", "missing_credentials",
     "request_uncertain", "transport_uncertain", "usage_missing", "configuration_changed", "asset_binding_error",
-    "unhandled_execution_error",
+    "unhandled_execution_error", "gate_input_error",
     "response_model_mismatch", "gate_response_model_mismatch", "gate_payload_mismatch", "retrieval_backend_error",
     "budget_exceeded", "budget_exhausted", "budget_limit_changed", "asset_binding_changed", "index_binding_changed"}
-FATAL_TYPES = {"BudgetExceeded", "BudgetLimitChanged", "RequestUncertain", "FileNotFoundError", "AssetBindingError",
+FATAL_TYPES = {"BudgetExceeded", "BudgetLimitChanged", "RequestUncertain", "FileNotFoundError", "AssetBindingError", "EvidenceGateInputError",
     "WeMMError", "QwenRetrievalError", "ConnectionError"}
 PROVIDER_CONFIGURATION_CODES = {"invalid_request", "invalid_image", "invalid_schema", "unknown_model", "missing_endpoint"}
 

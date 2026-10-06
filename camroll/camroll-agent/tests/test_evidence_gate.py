@@ -12,8 +12,11 @@ from PIL import Image
 import pytest
 
 from camroll_agent.budget import BudgetLedger, RequestJournal, RequestUncertain
-from camroll_agent.evidence_gate import CONTEXT_EVIDENCE_ID, EvidenceGateVerifier, MODEL, SYSTEM_PROMPT
-from camroll_agent.qwen import DeadlineExceeded, ProviderError, QwenClient, RequestLimitExceeded, RequestScope
+from camroll_agent.evidence_gate import (
+    CONTEXT_EVIDENCE_ID, CONTEXT_LIMIT, EvidenceGateInputError, EvidenceGateVerifier,
+    INPUT_TOKEN_LIMIT, MAX_TOKENS, MODEL, SYSTEM_PROMPT, _context_bound,
+)
+from camroll_agent.qwen import DeadlineExceeded, ProviderError, QwenClient, RequestLimitExceeded, RequestScope, image_messages
 
 
 def verdict(status="supported", evidence="metadata:date"):
@@ -492,6 +495,137 @@ def test_six_real_preprocessed_images_do_not_count_base64_as_context(tmp_path):
     assert "base64" not in json.dumps(result["model_calls"])
     with pytest.raises(ValueError, match="at most six"):
         verifier.verify(**inputs(images=images + [{"image_id": "extra", "path": path}]))
+
+
+def long_six_image_evidence(tmp_path, observation_repeats=5000):
+    path = tmp_path / "synthetic-evidence.png"
+    Image.new("RGB", (24, 24), "red").save(path)
+    images = [{"image_id": f"img_{index}", "path": path} for index in range(6)]
+    trusted = [{"evidence_id": "metadata:date", "source": "EXIF",
+                "fields": {"date": "2026-09-30", "place": "登记资料" * 1500}}]
+    derived = [{"evidence_id": "observation:all", "source": "model_observation",
+                "content": "合成观察" * observation_repeats}]
+    return inputs(images=images, trusted_metadata=trusted, derived_observations=derived)
+
+
+@pytest.mark.parametrize("spacing_only_overflow", [False, True])
+def test_six_images_and_over_48kb_utf8_evidence_are_sent_intact_within_context(tmp_path, spacing_only_overflow):
+    arguments = long_six_image_evidence(tmp_path, observation_repeats=2600)
+    arguments["derived_observations"][0]["content"] += '  保留内部空格、标点: , "引号"\n换行。  '
+    ids = [row["image_id"] for row in arguments["images"]]
+    expected_data = {
+        "question": arguments["question"], "candidate_answer": arguments["candidate_answer"],
+        "candidate_outcome": "answer",
+        "raw_images_in_order": [{"image_id": identifier, "evidence_id": "image:" + identifier} for identifier in ids],
+        "actual_delivery_image_ids": [], "remaining_reviewed_context_image_ids": ids,
+        "trusted_metadata": arguments["trusted_metadata"],
+        "derived_observations_not_independent_facts": arguments["derived_observations"],
+        "question_and_evidence_availability": {
+            "evidence_id": CONTEXT_EVIDENCE_ID, "raw_image_count": 6,
+            "trusted_metadata_count": 1, "derived_observation_count": 1,
+            "scope": "Question and supplied-evidence availability only; no unseen album facts.",
+        },
+    }
+    def spaced_messages():
+        return [{"role": "system", "content": SYSTEM_PROMPT}] + image_messages(
+            json.dumps(expected_data, ensure_ascii=False), [row["path"] for row in arguments["images"]])
+    if spacing_only_overflow:
+        # Fill a synthetic input so JSON separator whitespace alone crosses
+        # the real context bound. Every evidence character must still survive.
+        effective_limit = min(CONTEXT_LIMIT, INPUT_TOKEN_LIMIT + MAX_TOKENS)
+        padding = effective_limit + 1 - _context_bound(spaced_messages())
+        assert padding > 0
+        arguments["derived_observations"][0]["content"] += "x" * padding
+        assert _context_bound(spaced_messages()) == effective_limit + 1
+    verifier, transport, counts = gate(tmp_path, [response()])
+    result = verifier.verify(**arguments)
+    payload = transport.calls[0][0]
+    text = payload["messages"][1]["content"][0]["text"]
+    data = json.loads(text)
+    assert len(text.encode("utf-8")) > 48000
+    assert _context_bound(payload["messages"]) <= CONTEXT_LIMIT
+    assert _context_bound(payload["messages"]) - MAX_TOKENS <= INPUT_TOKEN_LIMIT
+    assert data == expected_data
+    assert text == json.dumps(expected_data, ensure_ascii=False, separators=(",", ":"))
+    assert len([part for part in payload["messages"][1]["content"] if part["type"] == "image_url"]) == 6
+    assert payload["messages"][0]["content"] == SYSTEM_PROMPT
+    assert payload["model"] == MODEL and payload["temperature"] == 0
+    assert payload["thinking"] == {"type": "disabled"} and payload["max_tokens"] == 2048
+    assert result["status"] == "supported" and counts["requests"] == len(transport.calls) == 1
+    assert verifier.ledger.summary()["reserved_cny"] == 0
+
+
+def test_true_six_image_context_overflow_stops_before_reservation_or_transport(tmp_path):
+    verifier, transport, counts = gate(tmp_path)
+    with pytest.raises(ProviderError) as caught:
+        verifier.verify(**long_six_image_evidence(tmp_path, observation_repeats=30000))
+    assert caught.value.code == "context_limit"
+    assert not transport.calls and counts["requests"] == 0
+    assert journal_rows(verifier) == [] and verifier.ledger.summary()["requests"] == 0
+    assert verifier.ledger.summary()["reserved_cny"] == 0
+
+
+def test_input_limit_is_enforced_even_when_total_context_would_fit(tmp_path):
+    verifier, transport, counts = gate(tmp_path)
+    arguments = inputs(derived_observations=[{"evidence_id": "observation:long",
+        "source": "synthetic_model_observation", "content": "x" * INPUT_TOKEN_LIMIT}])
+    # The input alone occupies the provider's 224k allowance; small metadata
+    # and output still fit within 256k, so the total-only guard is insufficient.
+    assert INPUT_TOKEN_LIMIT + len(SYSTEM_PROMPT.encode()) + MAX_TOKENS + 5000 < CONTEXT_LIMIT
+    with pytest.raises(ProviderError) as caught:
+        verifier.verify(**arguments)
+    assert caught.value.code == "context_limit"
+    assert not transport.calls and counts["requests"] == 0
+    assert journal_rows(verifier) == [] and verifier.ledger.summary()["requests"] == 0
+
+
+def test_unreadable_evidence_is_typed_input_fault_before_any_paid_request(tmp_path):
+    verifier, transport, counts = gate(tmp_path)
+    with pytest.raises(EvidenceGateInputError) as caught:
+        verifier.verify(**inputs(images=[{"image_id": "img_bad", "path": tmp_path}]))
+    assert caught.value.code == "gate_input_error"
+    assert not transport.calls and counts["requests"] == 0
+    assert journal_rows(verifier) == [] and verifier.ledger.summary()["requests"] == 0
+
+
+def test_six_image_token_allowance_keeps_large_metadata_without_changing_images(tmp_path):
+    arguments = long_six_image_evidence(tmp_path, observation_repeats=8000)
+    verifier, transport, counts = gate(tmp_path, [response()])
+    verifier.verify(**arguments)
+    payload = transport.calls[0][0]
+    parts = payload["messages"][1]["content"]
+    data = json.loads(parts[0]["text"])
+    assert len(parts[0]["text"].encode()) > 100000
+    assert data["trusted_metadata"] == arguments["trusted_metadata"]
+    assert data["derived_observations_not_independent_facts"] == arguments["derived_observations"]
+    assert _context_bound(payload["messages"]) <= CONTEXT_LIMIT
+    # Default detail and the shared JPEG bytes are unchanged; only local
+    # capacity accounting has changed, not the provider's visual input.
+    expected = image_messages(parts[0]["text"], [row["path"] for row in arguments["images"]])
+    assert payload["messages"][1:] == expected
+    assert counts["requests"] == 1
+
+
+@pytest.mark.parametrize("changes", [
+    {"request_id": ""}, {"question": ""}, {"outcome": "invalid"}, {"outcome": {}},
+    {"images": [{"image_id": "bad id", "path": "unused"}]},
+    {"images": [{"image_id": "img_valid", "path": None}]},
+    {"delivery_image_ids": ["missing"]},
+    {"trusted_metadata": {}},
+    {"trusted_metadata": [{"evidence_id": "metadata:1", "source": "EXIF", "fields": {"caption": "derived"}}]},
+    {"derived_observations": [{"evidence_id": "model:1", "image_id": [], "source": "model", "content": "observation"}]},
+    {"derived_observations": [{"evidence_id": "model:1", "source": "model", "fields": {"nested": {"ground_truth": "forbidden"}}}]},
+    {"derived_observations": [{"evidence_id": "model:1", "source": "model", "fields": {"confidence": float("nan")}}]},
+    {"derived_observations": [{"evidence_id": "model:1", "source": "model", "fields": {"unserializable": {1, 2}}}]},
+    {"deadline": "invalid"},
+])
+def test_presend_contract_errors_are_typed_and_never_create_requests(tmp_path, changes):
+    verifier, transport, counts = gate(tmp_path)
+    with pytest.raises(ValueError) as caught:
+        verifier.verify(**inputs(**changes))
+    assert isinstance(caught.value, EvidenceGateInputError) and caught.value.code == "gate_input_error"
+    assert not transport.calls and counts["requests"] == 0
+    assert journal_rows(verifier) == [] and verifier.ledger.summary()["requests"] == 0
 
 
 def test_no_reference_interface_or_untrusted_metadata_field(tmp_path):
