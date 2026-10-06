@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .common import read_json, safe_id, now_iso
-from .repository import Repository
+from .repository import ComparisonScopeError, Repository
 from .runner import Runner, configured_paths
 
 
@@ -120,6 +120,8 @@ def create_app(root=None, source=None, albums=None, *, runner_factory=Runner, mo
             result = repo.compare(values)
             result['runs'] = [with_cost_audit(state) for state in result['runs']]
             return result
+        except ComparisonScopeError as exc:
+            raise HTTPException(422, str(exc)) from None
         except (FileNotFoundError, ValueError):
             raise HTTPException(404, "run not found") from None
 

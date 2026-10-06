@@ -11,6 +11,10 @@ from .common import read_json, atomic_json, safe_id, sha256, now_iso
 from .metrics import summary
 
 
+class ComparisonScopeError(ValueError):
+    """Existing runs cannot be compared within the requested report scope."""
+
+
 class Repository:
     def __init__(self, root, *, history_roots=()):
         self.root = Path(root).resolve()
@@ -84,7 +88,19 @@ class Repository:
                 'query_cache_policy', 'source_unchanged', 'pinned_snapshot_unchanged',
                 'wall_ms', 'stop_reason', 'inference_config', 'index_binding', 'gate_summary_version',
                 'gate_complete', 'gate_policy', 'gate_summary', 'seen_benchmark', 'suite_id')
-        return {key: state.get(key) for key in keys if key in state}
+        return {key: state.get(key) for key in keys if key in state} | Repository._report_fields(state)
+
+    @staticmethod
+    def _report_fields(state):
+        if state.get('mode') != 'gate_ab':
+            return {}
+        # Gate's frozen summary.completed includes judgment completeness.
+        # Project execution separately, without changing the stored summary
+        # or inferring an outcome for any unrecorded/in-flight turn.
+        items = state.get('items') or []
+        return {'report_progress': {
+            'finished_question_count': sum(row.get('final_turn_executed') is True for row in items),
+            'executed_turn_count': sum(len(row.get('runtime_turns') or []) for row in items)}}
 
     def get_brief(self, run_id):
         return copy.deepcopy(self.brief(self._load_cached(run_id)))
@@ -92,6 +108,7 @@ class Repository:
     def detail(self, run_id):
         state = self._load_cached(run_id)
         result = {key: value for key, value in state.items() if key not in {"items", "media_mapping", "qa_ids"}}
+        result.update(self._report_fields(state))
         result["items"] = [{key: row.get(key) for key in ("qa_id", "question", "answer", "task_type", "angle", "difficulty",
                            "answerability", "execution_status", "judge_status", "retrieval_precision",
                            "retrieval_recall", "retrieval_f1", "agent_status", "wall_clock_ms",
@@ -293,6 +310,12 @@ class Repository:
             bindings = {json.dumps(state.get('index_binding'), sort_keys=True) for state in states}
             if len(bindings) != 1 or not states[0].get('index_binding'):
                 raise ValueError('Gate comparison requires the same immutable index binding')
+            if len(states) > 1:
+                suites = [state.get('suite_id') for state in states]
+                if (any(not isinstance(suite, str) or not suite.strip() for suite in suites)
+                        or len(set(suites)) != 1):
+                    raise ComparisonScopeError('Gate 对照只允许同一批次（suite_id）的记录；'
+                                               '历史批次请单独比较，缺少批次标识的记录只能单独查看。')
         qa_ids = list(dict.fromkeys(row["qa_id"] for state in states for row in (state.get("qa_plan") or state.get("items", []))))
         plans = {row['qa_id']: row for state in states for row in state.get('qa_plan', [])}
         maps = [{row["qa_id"]: row for row in state.get("items", [])} for state in states]

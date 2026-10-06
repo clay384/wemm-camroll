@@ -8,6 +8,13 @@ const statusName={preparing:'准备中',building:'建库中',evaluating:'问答�
 const alive=s=>['preparing','building','evaluating','judging','starting','cancelling'].includes(s);
 const badge=s=>`<span class="badge ${['completed','passed'].includes(s)?'good':['failed','blocked','restore_failed'].includes(s)?'bad':alive(s)||['incomplete','interrupted'].includes(s)?'warn':''}">${esc(statusName[s]||s||'未记录')}</span>`;
 const invalidRun=r=>r.validity_audit?.valid===false;
+function gateBatchBadge(r){
+  if(r.mode!=='gate_ab')return '';
+  const profile=state.profile;
+  const known=profile?.schema_version==='camroll-flash-gate-v1'&&profile.groups?.length;
+  const current=known&&profile.groups.some(group=>group.run_id===r.run_id);
+  return `<span class="badge">${!known?'批次未确认':current?'当前批次':'历史批次 · 单独比较'}</span>`;
+}
 const label=r=>r.mode==='gate_ab'?`${r.inference_config?.group||r.run_id} · ${r.inference_config?.generation_model||''} · WeMM · M4`:r.mode==='supplement'?`恢复后${r.qa_count??64}题补测·复用快照 · ${r.experiment||'W38Max'}`:r.experiment?`${r.experiment} · ${r.experiment_config?.generation_model||''} · ${r.experiment_config?.embedding_backend==='qwen'?'Qwen Embedding + Reranker':'WeMM'} · ${r.config}`:r.system_id==='sentrix'?'Sentrix · '+(r.model_name||r.model_profile||'历史模型')+' · '+(r.mode==='reuse'?'复用测评':'全链路'):`${(r.config||'M1')==='M1'?'历史 M1 参考':'原协议 CamRoll'} · WeMM · `+(r.mode==='composite'?'补齐后合并':r.mode==='repair'?'定点补跑':r.formal_protocol===false?'smoke':'首次结果');
 function runCounts(r){
   const s=r.summary||{},plannedQa=r.qa_count??s.planned_count??s.total;
@@ -18,10 +25,16 @@ function runCounts(r){
   return {plannedQa,validQa:s.judge_valid_count,invalidQa:s.quality_unscored_planned_count??s.judge_invalid_count,
     plannedTurns:r.planned_turn_count??(fullAlbum3?111:s.task_decision_planned_count??
       (typeof s.executed_turn_count==='number'&&typeof s.unexecuted_turn_count==='number'?s.executed_turn_count+s.unexecuted_turn_count:undefined)),
-    executedTurns:s.executed_turn_count,validTask:s.task_decision_valid_count,
+    executedTurns:r.mode==='gate_ab'?r.report_progress?.executed_turn_count:s.executed_turn_count,
+    finishedQa:r.mode==='gate_ab'?r.report_progress?.finished_question_count:s.completed,
+    validTask:s.task_decision_valid_count,
     executionErrors:s.execution_error_count};
 }
 const countRatio=(actual,planned)=>`${num(actual,0)} / ${num(planned,0)}`;
+function progressLabel(r,counts){
+  if(r.mode!=='gate_ab')return countRatio(counts.finishedQa,counts.plannedQa);
+  return `已结束问题 ${countRatio(counts.finishedQa,counts.plannedQa)}<div class="subtitle">已执行轮次 ${countRatio(counts.executedTurns,counts.plannedTurns)}</div>`;
+}
 const executionErrorLabel=(r,counts)=>r.system_id==='sentrix'?'未记录（旧字段）':num(counts.executionErrors,0);
 function legacyE2EInvalid(r){
   const elapsed=r.summary?.benchmark_e2e_latency_excluding_judge_ms;
@@ -45,7 +58,7 @@ function applyHealth(health){
 async function enter(){applyHealth(await api('/api/health'));await refresh();await loadProfile();if(!state.poll)state.poll=setInterval(async()=>{if(document.hidden)return;try{await refresh(false);if(state.current&&state.currentData&&alive(state.currentData.status))await openRun(state.current,false);}catch{}},5000);}
 async function loadProfile(){
   try{
-    const p=await api('/api/comparison-profile');state.profile=p;renderProfile(p);
+    const p=await api('/api/comparison-profile');state.profile=p;renderProfile(p);renderRuns();
   }catch(e){notice(e.message,true);}
 }
 function renderProfile(p){
@@ -75,7 +88,7 @@ $('#refresh').addEventListener('click',()=>refresh());
 $('#close-dialog').addEventListener('click',()=>$('#item-dialog').close());
 $('#item-dialog').addEventListener('click',e=>{if(e.target===$('#item-dialog'))$('#item-dialog').close();});
 async function refresh(clear=false){try{state.runs=(await api('/api/runs')).runs;renderRuns();if(state.profile)await loadProfile();if(clear)$('#notice').hidden=true;}catch(err){notice(err.message,true);}}
-function renderRuns(){const rows=state.runs.map(r=>{const s=r.summary||{},d=s.judge_distribution||{},counts=runCounts(r);return `<tr><td><input type="checkbox" class="compare-check" data-id="${esc(r.run_id)}" ${state.selected.has(r.run_id)?'checked':''} ${r.mode==='supplement'?'disabled title="补测独立展示"':''} aria-label="选择比较"></td><td><span class="run-name" data-run="${esc(r.run_id)}">${esc(label(r))}<small>${esc(r.run_id)}</small></span></td><td>${invalidRun(r)?'<span class="badge bad">实施无效</span>':badge(r.status)}<div class="subtitle">${r.mode==='gate_ab'?'Flash × Gate · 共用冻结索引':r.mode==='supplement'?'恢复后补测 · 独立展示':r.system_id==='sentrix'?'历史 · 只读':r.mode==='repair'?'定点补跑 · 非全量':r.mode==='composite'?'合并视图 · 保留首次性能':r.formal_protocol===false?'smoke · 非正式':r.experiment?'同期四组 · 独立冷建库':'历史协议'}</div></td><td>${num(s.completed,0)} / ${num(counts.plannedQa,0)}<div class="subtitle">有效评分 ${countRatio(counts.validQa,counts.plannedQa)} · 未评分 ${num(counts.invalidQa,0)}</div></td><td class="count">${invalidRun(r)?'仅存证':pct(s.retrieval_recall_macro??s.image_retrieval_recall_macro)}</td><td><b>${invalidRun(r)?'仅存证':pct(r.experiment||r.mode==='gate_ab'?s.quality_correct_planned_rate:s.exact_accuracy)}</b><div class="subtitle">${d['2']??0} 正确 · ${d['1']??0} 部分 · ${d['0']??0} 错误${r.mode==='supplement'?` · 分母${counts.plannedQa}题`:r.experiment||r.mode==='gate_ab'?' · 分母100题':''}</div></td><td>${e2eLabel(r)}</td><td>${r.qa_concurrency??'—'} / ${r.judge_concurrency??'—'}<div class="subtitle">Agent / Judge</div></td></tr>`;}).join('');$('#run-list').innerHTML=rows?`<table><thead><tr><th></th><th>被测系统 / 运行版本</th><th>状态</th><th>进度</th><th>交付 Recall</th><th>回答完全正确</th><th>全链路时间</th><th>并发</th></tr></thead><tbody>${rows}</tbody></table>`:`<div class="empty">暂无运行结果；计划组别与未开始状态保留在上方。</div>`;document.querySelectorAll('[data-run]').forEach(e=>e.addEventListener('click',()=>openRun(e.dataset.run)));document.querySelectorAll('.compare-check').forEach(e=>e.addEventListener('change',()=>{e.checked?state.selected.add(e.dataset.id):state.selected.delete(e.dataset.id);}));$('#start').disabled=state.readOnly||state.runs.some(r=>alive(r.status));}
+function renderRuns(){const rows=state.runs.map(r=>{const s=r.summary||{},d=s.judge_distribution||{},counts=runCounts(r);return `<tr><td><input type="checkbox" class="compare-check" data-id="${esc(r.run_id)}" ${state.selected.has(r.run_id)?'checked':''} ${r.mode==='supplement'?'disabled title="补测独立展示"':''} aria-label="选择比较"></td><td><span class="run-name" data-run="${esc(r.run_id)}">${esc(label(r))}<small>${esc(r.run_id)}</small></span></td><td>${invalidRun(r)?'<span class="badge bad">实施无效</span>':badge(r.status)}${gateBatchBadge(r)}<div class="subtitle">${r.mode==='gate_ab'?'Flash × Gate · 共用冻结索引':r.mode==='supplement'?'恢复后补测 · 独立展示':r.system_id==='sentrix'?'历史 · 只读':r.mode==='repair'?'定点补跑 · 非全量':r.mode==='composite'?'合并视图 · 保留首次性能':r.formal_protocol===false?'smoke · 非正式':r.experiment?'同期四组 · 独立冷建库':'历史协议'}</div></td><td>${progressLabel(r,counts)}<div class="subtitle">有效评分 ${countRatio(counts.validQa,counts.plannedQa)} · 未评分 ${num(counts.invalidQa,0)}</div></td><td class="count">${invalidRun(r)?'仅存证':pct(s.retrieval_recall_macro??s.image_retrieval_recall_macro)}</td><td><b>${invalidRun(r)?'仅存证':pct(r.experiment||r.mode==='gate_ab'?s.quality_correct_planned_rate:s.exact_accuracy)}</b><div class="subtitle">${d['2']??0} 正确 · ${d['1']??0} 部分 · ${d['0']??0} 错误${r.mode==='supplement'?` · 分母${counts.plannedQa}题`:r.experiment||r.mode==='gate_ab'?' · 分母100题':''}</div></td><td>${e2eLabel(r)}</td><td>${r.qa_concurrency??'—'} / ${r.judge_concurrency??'—'}<div class="subtitle">Agent / Judge</div></td></tr>`;}).join('');$('#run-list').innerHTML=rows?`<table><thead><tr><th></th><th>被测系统 / 运行版本</th><th>状态</th><th>进度</th><th>交付 Recall</th><th>回答完全正确</th><th>全链路时间</th><th>并发</th></tr></thead><tbody>${rows}</tbody></table>`:`<div class="empty">暂无运行结果；计划组别与未开始状态保留在上方。</div>`;document.querySelectorAll('[data-run]').forEach(e=>e.addEventListener('click',()=>openRun(e.dataset.run)));document.querySelectorAll('.compare-check').forEach(e=>e.addEventListener('change',()=>{e.checked?state.selected.add(e.dataset.id):state.selected.delete(e.dataset.id);}));$('#start').disabled=state.readOnly||state.runs.some(r=>alive(r.status));}
 $('#start').addEventListener('click',async()=>{if(state.readOnly)return;if(!window.confirm('将创建新相册并运行全部355张图片和100道题，使用已有累计预算账本。开始本次独立评测？'))return;try{$('#start').disabled=true;const result=await api('/api/runs',{method:'POST',body:JSON.stringify({config:$('#config').value})});notice('已提交独立运行 '+result.run_id+'。');state.current=result.run_id;await refresh();}catch(err){notice(err.message,true);$('#start').disabled=state.readOnly;}});
 function metric(title,value,note){return `<div class="metric"><label>${esc(title)}</label><strong>${esc(value)}</strong><small>${esc(note)}</small></div>`;}
 function ledgerDelta(run){const before=run.budget_before?.estimated_spent_cny,after=run.budget_after?.estimated_spent_cny;return typeof before==='number'&&typeof after==='number'?after-before:null;}
