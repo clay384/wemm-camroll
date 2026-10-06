@@ -206,8 +206,9 @@ def _format_repair_hint(code, primary_ids, derived_ids, outcome):
                  'The context-only exception applies solely to a supported reason whose claim is exactly "candidate_outcome" '
                  'when the supplied candidate outcome is clarify or refuse; it never supports an answer outcome or a concrete album fact. '
                  'If no supplied primary evidence can justify the assessment, mark that reason insufficient; an empty evidence_ids list is allowed. '
-                 'Do not invent IDs or facts, add unrelated citations, or choose supported merely to pass validation. '
-                 'Keep the overall status consistent with all reasons: contradicted if any reason is contradicted, '
+                 'Do not invent IDs or facts, add unrelated citations, or choose supported merely to pass validation. ')
+    if code in {"primary_evidence_required", "inconsistent_verdict"}:
+        hint += ('Keep the overall status consistent with all reasons: contradicted if any reason is contradicted, '
                  'otherwise insufficient if any reason is insufficient, otherwise supported. '
                  'The top-level evidence_ids must equal the union of the reason evidence_ids. ')
     inventory = {"candidate_outcome": outcome, "allowed_primary_evidence_ids": sorted(primary_ids),

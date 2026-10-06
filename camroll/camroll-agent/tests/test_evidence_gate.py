@@ -256,6 +256,68 @@ def test_one_format_repair_is_paid_separately_and_replayable(tmp_path):
     assert not replay_transport.calls and replay_count["requests"] == 0
 
 
+def inconsistent_reference_case(direction, assessment):
+    reasons = [
+        {"claim": "Synthetic fact a", "assessment": assessment, "evidence_ids": ["evidence:a"], "reason": "Assessment from registered evidence a."},
+        {"claim": "Synthetic fact b", "assessment": "supported", "evidence_ids": ["evidence:b"], "reason": "Assessment from registered evidence b."},
+    ]
+    ids = ["evidence:a", "evidence:b"]
+    if direction == "missing":
+        reasons.append({"claim": "candidate_outcome", "assessment": "supported",
+            "evidence_ids": [CONTEXT_EVIDENCE_ID], "reason": "The available evidence justifies this clarification."})
+        ids.append(CONTEXT_EVIDENCE_ID)
+    repaired = {"status": assessment, "evidence_ids": ids, "reasons": reasons}
+    bad = copy.deepcopy(repaired)
+    if direction == "missing":
+        bad["evidence_ids"].remove(CONTEXT_EVIDENCE_ID)
+    else:
+        bad["evidence_ids"].append(CONTEXT_EVIDENCE_ID)
+    arguments = inputs(candidate_answer="Please clarify which synthetic record you mean.", outcome="clarify",
+        trusted_metadata=[
+            {"evidence_id": "evidence:a", "source": "synthetic_registry", "fields": {"name": "a"}},
+            {"evidence_id": "evidence:b", "source": "synthetic_registry", "fields": {"name": "b"}},
+        ])
+    return bad, repaired, arguments
+
+
+@pytest.mark.parametrize("direction", ["missing", "surplus"])
+@pytest.mark.parametrize("assessment", ["supported", "insufficient", "contradicted"])
+def test_inconsistent_refs_get_one_explicit_union_repair_preserving_assessment(tmp_path, direction, assessment):
+    bad, repaired, arguments = inconsistent_reference_case(direction, assessment)
+    verifier, transport, count = gate(tmp_path, [response(bad), response(repaired)])
+    result = verifier.verify(**arguments)
+    sent = [row[0] for row in transport.calls]
+    payload = sent[1]
+    hint = payload["messages"][-1]["content"]
+    assert "inconsistent_verdict" in hint
+    assert "contradicted if any reason is contradicted" in hint
+    assert "otherwise insufficient if any reason is insufficient, otherwise supported" in hint
+    assert "top-level evidence_ids must equal the union of the reason evidence_ids" in hint
+    assert "Preserve your substantive assessment; do not try to change a negative verdict to supported" in hint
+    assert payload["messages"][:-2] == sent[0]["messages"]
+    assert json.loads(payload["messages"][-2]["content"]) == bad
+    assert payload["messages"][0]["content"] == SYSTEM_PROMPT
+    assert all(payload[key] == sent[0][key] for key in ("model", "temperature", "thinking", "max_tokens", "response_format"))
+    assert {key: result[key] for key in repaired} == repaired
+    assert result["status"] == assessment and result["attempts"] == count["requests"] == len(sent) == 2
+    assert result["model_calls"][0]["validation_error"] == "inconsistent_verdict"
+    assert [event["parse_status"] for event in result["model_calls"]] == ["invalid", "valid"]
+    assert len({event["request_id"] for event in result["model_calls"]}) == 2
+    assert verifier.ledger.summary()["reserved_cny"] == 0
+
+
+@pytest.mark.parametrize("direction", ["missing", "surplus"])
+def test_inconsistent_refs_still_fault_after_one_unsuccessful_format_repair(tmp_path, direction):
+    bad, _, arguments = inconsistent_reference_case(direction, "contradicted")
+    verifier, transport, count = gate(tmp_path, [response(bad), response(bad)])
+    with pytest.raises(ProviderError) as caught:
+        verifier.verify(**arguments)
+    assert caught.value.code == "gate_invalid_verdict"
+    assert count["requests"] == len(transport.calls) == 2
+    assert [row[2] for row in journal_rows(verifier)] == ["completed", "completed"]
+    assert verifier.ledger.summary()["reserved_cny"] == 0
+
+
 def two_image_outcome_case(tmp_path):
     images = []
     for color in ("red", "blue"):

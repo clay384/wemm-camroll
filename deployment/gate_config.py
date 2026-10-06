@@ -4,7 +4,7 @@ import os
 from four_config import (BASE, GPU_UUID, PYTHON, RUNTIME as HISTORY_RUNTIME,
                          SOURCE, configure as previous_configure)
 
-RUNTIME = BASE / 'runtime/photobench-flash-gate-20261006e'
+RUNTIME = BASE / 'runtime/photobench-flash-gate-20261006f'
 ALBUMS = HISTORY_RUNTIME / 'albums'
 SOURCE_RUN_ID = 'w38max-formal-20260930-122300-813923'
 SOURCE_ALBUM_ID = 'eval-' + SOURCE_RUN_ID
