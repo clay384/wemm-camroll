@@ -1,0 +1,37 @@
+{
+    "transformer_task": "feature-extraction",
+    "modality_config": {
+        "text": {
+            "method": "embedding",
+            "method_output_name": null
+        },
+        "image": {
+            "method": "embedding",
+            "method_output_name": null
+        },
+        "video": {
+            "method": "embedding",
+            "method_output_name": null
+        },
+        "image+text": {
+            "method": "embedding",
+            "method_output_name": null
+        },
+        "text+video": {
+            "method": "embedding",
+            "method_output_name": null
+        },
+        "message": {
+            "method": "embedding",
+            "method_output_name": null,
+            "format": "structured"
+        }
+    },
+    "module_output_name": "sentence_embedding",
+    "processing_kwargs": {
+        "chat_template": {
+            "chat_template": "sentence_transformers"
+        }
+    },
+    "unpad_inputs": false
+}

@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "model_id": "tencent/WeMM-Embedding-9B",
+  "revision": "00c52839de57a6d4fd5b78cf5522ccf0ac8ea482",
+  "source_lock": "../SOURCE_LOCK.json",
+  "scope": "Pinned public model implementation, configuration, templates, model card and license; no model weights or tokenizer vocabulary. These files are architecture references and do not change the deployed encoder.",
+  "files": [
+    {
+      "path": "LICENSE",
+      "source_path": "LICENSE",
+      "bytes": 24545,
+      "sha256": "fa04f82cdc245f149911d81176ecef0bf5b59375d03b142db438f2d2c3401ff8",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/LICENSE"
+    },
+    {
+      "path": "UPSTREAM_MODEL_CARD.md",
+      "source_path": "README.md",
+      "bytes": 7888,
+      "sha256": "c589cf64dd0940680d861cd1296aa4598f7dbe18f19e5ef81777652170deed0d",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/README.md"
+    },
+    {
+      "path": "additional_chat_templates/sentence_transformers.jinja",
+      "source_path": "additional_chat_templates/sentence_transformers.jinja",
+      "bytes": 1452,
+      "sha256": "69c72e7d4579f377e15c79de4d4bf5964f929ac2cf8c1b1231f95940ed97cd97",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/additional_chat_templates/sentence_transformers.jinja"
+    },
+    {
+      "path": "chat_template.jinja",
+      "source_path": "chat_template.jinja",
+      "bytes": 7755,
+      "sha256": "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/chat_template.jinja"
+    },
+    {
+      "path": "config.json",
+      "source_path": "config.json",
+      "bytes": 3068,
+      "sha256": "34abd67be4bab3d749ba7b3ad2daa5fc0a09ab12064a64f053fa244fa26c6004",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/config.json"
+    },
+    {
+      "path": "config_sentence_transformers.json",
+      "source_path": "config_sentence_transformers.json",
+      "bytes": 245,
+      "sha256": "7957a6bc6c8f20335abd7b4e55d433db830551b86be932400a6a1200a28d4bb6",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/config_sentence_transformers.json"
+    },
+    {
+      "path": "embedding_chat_template.jinja",
+      "source_path": "embedding_chat_template.jinja",
+      "bytes": 1086,
+      "sha256": "7c3df2aab83ab9096428ec27b6b99ad87c4790418b830d119957634f28c677ba",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/embedding_chat_template.jinja"
+    },
+    {
+      "path": "modeling_st_wemm.py",
+      "source_path": "modeling_st_wemm.py",
+      "bytes": 3180,
+      "sha256": "521d02c1c60ae727cc9dc6500cdb0b28c53b259e0ce3d37197920a33ba4dd333",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/modeling_st_wemm.py"
+    },
+    {
+      "path": "modeling_wemm_embedding.py",
+      "source_path": "modeling_wemm_embedding.py",
+      "bytes": 1205,
+      "sha256": "ac255e1fad459cc3e68891d6c3327f4486922aed02fb3c5c13fb53277ba8e94f",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/modeling_wemm_embedding.py"
+    },
+    {
+      "path": "modules.json",
+      "source_path": "modules.json",
+      "bytes": 106,
+      "sha256": "be6481eec30eb56a0020baea14d5fc6d14a2134a44c6485e3595781cceb04f8f",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/modules.json"
+    },
+    {
+      "path": "patch_sglang_video.py",
+      "source_path": "patch_sglang_video.py",
+      "bytes": 1983,
+      "sha256": "c20c73e803a634e5dc54c39bc1c20cec0e7929c0320121769268a3dfb2e58a2d",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/patch_sglang_video.py"
+    },
+    {
+      "path": "processor_config.json",
+      "source_path": "processor_config.json",
+      "bytes": 1191,
+      "sha256": "d89ef49ce9cd37fbf510158e13c1ef063d9286411c1ec9049932dbe0487143b1",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/processor_config.json"
+    },
+    {
+      "path": "sentence_bert_config.json",
+      "source_path": "sentence_bert_config.json",
+      "bytes": 950,
+      "sha256": "9d3d5f6695cf12784c13b03dbef305c80ee2bdf378abf5cb15ed032de578d00b",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/sentence_bert_config.json"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "source_path": "tokenizer_config.json",
+      "bytes": 1148,
+      "sha256": "bef247a6b4d35e878d074738ae63532fb230d31d2fe362c326b6a729a5c7a7bb",
+      "source_url": "https://huggingface.co/tencent/WeMM-Embedding-9B/resolve/00c52839de57a6d4fd5b78cf5522ccf0ac8ea482/tokenizer_config.json"
+    }
+  ],
+  "excluded": [
+    "model.safetensors",
+    "tokenizer.json",
+    ".gitattributes"
+  ]
+}

@@ -1,6 +1,7 @@
 .DS_Store
 .venv/
 .mac-venv/
+.venv-review/
 __pycache__/
 *.py[cod]
 *.egg-info/

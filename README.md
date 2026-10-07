@@ -1,34 +1,83 @@
-# WeMM + CamRoll 与独立 PhotoBench 评测
+# WeMM–CamRoll 相册系统
 
-仓库保存 2026-09-16 从 `.100` 实际部署采集的完整基线，以及基于该基线开发的六工具 CamRoll 与独立 PhotoBench 评测。生成使用 Qwen3.7-Flash，向量复用既有 WeMM 单 GPU worker。仓库不包含模型权重、私人相册、QA、向量、数据库、逐题运行结果或凭据。
+这是相册建库、图片／文字检索、多模态 Agent 问答、证据 Gate、PhotoBench 评测与报告服务的完整源码仓库。包含原 WeMM 工程、CamRoll 改造、Qwen 检索 worker、锁定的第三方实现、前后端、测试和部署监督器。
 
-- 基线标签：`baseline/2026-09-16-pre-photobench`。
-- 源码采集时间及每个来源文件的 SHA256：[`baseline/source_manifest.json`](baseline/source_manifest.json)。
-- `camroll/`：`/home/realmagic/camroll-wemm` 当前源码、测试、部署工具和项目文档。
-- `camroll/camroll-chat/`：固定 355 图相册的浅色问答页面、同源代理、安全图片读取和实时可审计轨迹。
-- `deployment/CHAT.md`：独立 8773 进程的发布、验证和回滚说明。
-- `wemm/`：`/home/realmagic/wemm-embedding-lab` 当前源码、前端、固定配置及官方来源锁；包含已部署的 `backend/camroll_internal.py`。
-- `docs/project/`：Mac 本地交接及后续设计文档的原样存档；其中旧路径和旧授权边界是历史记录，实际操作遵循最新用户授权与根目录约定。
-- `baseline/environment/`：采集时的 Python 版本与 `pip freeze`，不包含虚拟环境本体。CamRoll 的 editable 路径仅记录原部署位置，重建时使用本地 `camroll-agent` 路径。
+**当前架构版本：`architecture/2026-10-07-v1`。** 本版基于已部署源码 `d49489fc33fde5e149d9be4a2a6aea9e4333b791` 整理完整阅读入口及非权重模型架构材料；不修改冻结实验的模型、提示词、Gate、评分或停止规则。正式实验尚未全部完成，不能把源码发布当作评测验收通过。
 
-## 架构
+仓库不包含模型权重、私人图片／人脸参考照、QA／GT、原始向量、数据库、密钥或逐题运行记录。源码完整不代表已携带这些外部运行资源。
 
-原图 EXIF 时间/GPS、离线地名、命名参考照和关系进入独立建库。CPU 人脸模型提供带来源和不确定状态的身份匹配，Qwen 生成描述和事件，WeMM 编码图片与文本，发布独立相册快照。Agent 通过 `search`、`grep`、`list_by_date`、`get`、`view_image`、`query_photo_people` 读取固定索引，支持隔离多轮会话并分别记录候选、证据和最终交付图片。详细契约见 [`docs/PHOTOBENCH_PROTOCOL.md`](docs/PHOTOBENCH_PROTOCOL.md)。
+## 从这里阅读
 
-`camroll/camroll-agent/camroll_eval/` 提供独立 runner、冻结的 Sentrix 评分兼容层、共享费用账本上的 Judge 调用、历史回放和局域网直接访问的比较页面。正式协议为 355 图、8 人、6 条关系、100 题／111 轮，Agent/Judge 并发 12/12。原 `.153:8771` 保持只读；新服务使用 `.100:8772`，旧 `.100:8765/8770` 保留。
+| 文档 | 用途 |
+|---|---|
+| [当前完整架构](docs/ARCHITECTURE_CURRENT.md) | 建库、检索、问答、Gate、费用、评测、服务与资源恢复的数据流 |
+| [源码地图](docs/CODE_MAP.md) | 按职责定位真实模块、类、入口与测试 |
+| [模型及外部依赖](docs/MODEL_DEPENDENCIES.md) | WeMM／Qwen 架构实现、来源锁、权重与运行文件的边界 |
+| [ChatGPT 云端阅读指南](docs/CLOUD_READING.md) | 私有仓库授权、验证访问、阅读顺序与云端运行限制 |
+| [本版本说明](docs/releases/2026-10-07-architecture-v1.md) | 本次范围、冻结版本、当前实验状态与发布校验 |
+| [工作约定](AGENTS.md) | 私人数据边界、实验不可变性、GPU 与费用规则 |
+| [历史恢复说明](RESTORE.md) | 2026-09-16 基线恢复；不能直接应用于当前源码校验 |
 
-相册问答数据流为 `浏览器 → 8773 → 8772 CamRoll Agent → Qwen3.7-Flash / WeMM → 冻结索引`。8773 固定相册、索引版本、M4 和模型，不持有云密钥或第二套费用账本；提问仍会产生云调用并写入 8772 的共享账本。8773 的回滚只停止自己的受控进程，不能撤销上游调用或恢复费用余额。
+## 系统结构
 
-## 重建与恢复
+```mermaid
+flowchart TD
+    A[外部私人照片／登记资料] --> B[CamRoll 建库流水线]
+    B --> C[EXIF／地名／CPU 人脸匹配]
+    B --> D[Qwen 描述与事件]
+    B --> E[WeMM 或 Qwen 图片／文本向量]
+    C --> F[绑定模型指纹的相册快照]
+    D --> F
+    E --> F
+    U[相册问答前端／CLI] --> G[Agent 六工具循环]
+    G --> H[Library／M4 检索与可选 Qwen 重排]
+    H --> F
+    G --> I[看图与最终复核]
+    I --> J[可选规则与 Doubao 事实 Gate]
+    J --> K[最终答案／交付图片／失败状态]
+    G --> L[请求 journal 与共享费用账本]
+    I --> L
+    J --> L
+    K --> M[独立评测与 Doubao 最终评分]
+    M --> N[8774 只读比较报告]
+```
 
-恢复说明见 [`RESTORE.md`](RESTORE.md)。源码基线、运行数据备份和凭据是三个独立部分；Git clone 本身不能恢复相册数据库。累计费用账本始终沿用，不能恢复旧余额。`deployment/manage_eval.py` 只管理经进程身份核验的独立 8772 服务，`rollback` 停止该服务，原 8770 继续可用。
+| 目录 | 内容 |
+|---|---|
+| [`camroll/camroll-agent/camroll_agent/`](camroll/camroll-agent/camroll_agent) | 建库、索引、Library、六工具 Agent、云客户端、Gate、账本与请求持久化 |
+| [`camroll/camroll-agent/camroll_eval/`](camroll/camroll-agent/camroll_eval) | 冻结协议、runner、最终 Judge、指标、续测来源、报告 API 和页面 |
+| [`camroll/camroll-chat/`](camroll/camroll-chat) | 8773 相册问答页面、同源代理和受限图片读取 |
+| [`wemm/`](wemm) | 原 WeMM 后端、单 GPU worker、预处理、前端及锁定的官方代码 |
+| [`deployment/`](deployment) | 隔离部署、GPU1 租约和恢复、Qwen worker、四组／Gate／续测及只读报告入口 |
+| [`deployment/vendor/qwen_vl/`](deployment/vendor/qwen_vl) | Qwen embedding／reranker 的锁定实现与兼容修补说明 |
+| [`docs/`](docs) | 当前架构、冻结协议和版本说明；`docs/project/` 是历史资料 |
+| [`baseline/`](baseline) | 2026-09-16 源码采集清单与当时环境信息 |
 
-部署目录固定为 `/home/realmagic/camroll-wemm/releases/<完整提交号>`，使用独立 `.venv-photobench`。受限配置位于 `runtime/photobench-v2`。部署依赖锁见 `deployment/requirements-linux-py310.lock`；`deployment/with_eval_config.py camroll_eval run --run-id <新ID>` 启动正式冷建库评测，完成后的 run 不可改写。
+## 当前实验与历史边界
 
-当前真实部署的 WeMM API 已有后续认证/调度保护，本仓库保存的是采集时版本。不要拿历史报告中的 `wemm_app.py.before` 代替这一基线；那是早于 CamRoll 接入的版本。
+2026-09-30 四模型实验各自冷建库，比较 Qwen embedding＋reranker 和 WeMM；生成配置含当时的 Flash／Max。源码保留这些历史能力及记录读取入口。
 
-`wemm/scripts/package_delivery.py` 是原部署中保留的历史源码，其旧打包白名单会包含运行报告，不得用于 GitHub 备份。向本仓库提交时遵守根 `.gitignore` 和明确的源码范围。
+当前 Flash Gate 实验仅使用 **qwen3.7-flash、qwen3.8-flash 和 Doubao Seed 2.0 Lite**。四组共享一个冻结 WeMM 快照，分别开启／关闭 Gate；不重新建库，不调用 Max。固定 M4、Agent 并发 1、最终 Judge 并发 4、每轮 600 秒、每组 100 题／111 轮，费用上限沿用原累计账本 **600 元**。详见 [Flash Gate](deployment/FLASH_GATE.md)、[首次独立续测](deployment/GATE_CONTINUATION.md) 和 [剩余组入口](deployment/GATE_REMAINING_RUNBOOK.md)。
 
-## 来源与授权
+截至 2026-10-07 12:43（Asia/Shanghai）最后验收：F37-Off、F37-On 均执行 111 轮；F38-Off 执行 1 轮、F38-On 执行 8 轮后触发本地上下文保护，整体 **231/444 轮，未完整交付**。两次窗口已恢复、GPU1 已释放、8774 只读报告保留。该观测不是实时健康承诺。新版本发布不授权补跑或改变冻结停止规则。
 
-CamRoll 基于 `thaoshibe/camroll` 的 `1967f977dbd51ce3f3b3b0d3213d21a514e55dfd`，保留其 CC BY-NC-SA 4.0 许可证及修改记录。WeMM 官方代码和模型版本见 [`THIRD_PARTY.md`](THIRD_PARTY.md) 与 `wemm/SOURCE_LOCK.json`。本仓库不把第三方源码重新声明为自有许可。
+## 阅读与离线验证
+
+读取源码和架构文档不需要任何权重、云密钥、私人相册或服务器连接。运行常规组件回归建议使用独立 Python 3.10／3.11 环境（既有Linux验收使用3.10）；报告UI回归还需要PATH中有Node.js，缺少时相关测试会跳过。安装阶段需要软件包源或本地wheel，测试阶段不调用真实模型：
+
+```bash
+python3.10 -m venv .venv-review
+.venv-review/bin/python -m pip install -r camroll/requirements-wemm.txt
+.venv-review/bin/python -m pip install --no-deps -e camroll/camroll-agent
+PYTHONPATH=camroll/camroll-agent:.:deployment .venv-review/bin/python -m pytest -q camroll/camroll-agent/tests camroll/tests deployment
+```
+
+这些测试的真实模型接口使用替身，不等于 GPU 推理或线上验收。生产环境依赖锁位于 [PhotoBench 锁](deployment/requirements-linux-py310.lock)、[Qwen worker 锁](deployment/qwen_model_worker.freeze.txt) 和 [WeMM 锁](wemm/requirements.lock)。各环境互相隔离，不把所有依赖装进同一个虚拟环境。
+
+真实建库、问答、Gate 和 Judge 均可能收费或写入状态。`deployment/*suite.py`、续测脚本与配置包含既有主机路径及冻结来源校验，不能在云端直接当作通用启动器运行。当前 8774 报告不挂载收费问答接口；8773 相册问答是另一个服务。
+
+## 发布与来源
+
+本版本采用 Git 提交、不可移动的新标签和仅含 Git 文件的源码发布包。发布包附逐文件 SHA256 清单；运行数据和凭据在仓库外独立保存。禁止使用历史 [`wemm/scripts/package_delivery.py`](wemm/scripts/package_delivery.py) 制作 GitHub 发布包，它的旧范围可能包含运行数据。
+
+原基线标签 `baseline/2026-09-16-pre-photobench` 保留不动。[基线清单](baseline/source_manifest.json) 只适用于对应旧标签，不能拿它验证当前改造后的文件。第三方代码、模型来源与既有许可见 [THIRD_PARTY.md](THIRD_PARTY.md)，不因本次发布重新许可。

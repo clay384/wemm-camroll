@@ -1,0 +1,32 @@
+{#- Embedding template used by Sentence Transformers.
+
+    Renders the same surface form as chat_template.jinja for text and images. Video
+    is the exception: it renders as a bare <|video_pad|>, because the processor
+    expands that token into one <seconds><|vision_start|>...<|vision_end|> block per
+    frame and, from transformers 5.3, no longer consumes a surrounding pair. The
+    wrapped form therefore gains a second, unwanted pair of vision boundaries there.
+    This matches embedding_chat_template.jinja, which is bare for the same reason.
+
+    The tokenizer normalizer drops the role newline before a leading image and the
+    newline after the final <|im_end|>, then the post-processor appends <embedding>. #}
+{%- for message in messages %}
+{{- '<|im_start|>' + message.role + '\n' }}
+{%- if message.content is string %}
+{{- message.content }}
+{%- elif message.content is iterable and message.content is not mapping %}
+{%- for item in message.content %}
+{%- if 'image' in item or 'image_url' in item or item.type == 'image' %}
+{{- '<|vision_start|><|image_pad|><|vision_end|>' }}
+{%- elif 'video' in item or item.type == 'video' %}
+{{- '<|video_pad|>' }}
+{%- elif 'text' in item %}
+{{- item.text }}
+{%- else %}
+{{- raise_exception('Unexpected item type in content.') }}
+{%- endif %}
+{%- endfor %}
+{%- elif message.content is not none %}
+{{- raise_exception('Unexpected content type.') }}
+{%- endif %}
+{{- '<|im_end|>\n' }}
+{%- endfor %}

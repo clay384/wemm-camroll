@@ -1,5 +1,7 @@
 # CamRoll · Qwen3.7-Flash + WeMM
 
+> 本页保留2026-09-15阶段的使用说明和验收。当前版本支持六工具、Qwen检索与Flash Gate，实验配置／预算已更新；先读[仓库总入口](../README.md)、[当前架构](../docs/ARCHITECTURE_CURRENT.md)和[模型依赖](../docs/MODEL_DEPENDENCIES.md)。下文五工具、300元等数值是历史口径。
+
 此分支基于上游 `thaoshibe/camroll` 的 `1967f977`，改为云端 Qwen3.7-Flash 生成与现有 WeMM 单 worker 检索。上游说明归档在 [UPSTREAM_README.md](docs/UPSTREAM_README.md)，其中旧模型安装命令不适用于本部署。
 
 本轮已部署并验证，详见 [2026-09-15 验收与检索结果](docs/VALIDATION_20260915.md)。保持 M1 为默认：800题 Hit@1 为80.25%，M3双路为77.50%；四种问答模式已接通，最终答案质量未批量评分。
