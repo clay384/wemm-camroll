@@ -137,10 +137,10 @@ def synthetic_chain_acceptance(run, *, group):
             'measured_failure_policy': 'Model contract failures and Gate exhaustion remain unscored failures; acceptance validates execution, not answer quality.'}
 
 
-def fixtures():
+def fixtures(runtime=None):
     from PIL import Image, ImageDraw
     from camroll_eval.common import atomic_json
-    root = RUNTIME / 'fixtures/synthetic-flash-gate-v1'
+    root = Path(runtime if runtime is not None else RUNTIME) / 'fixtures/synthetic-flash-gate-v1'
     if root.exists():
         raise RuntimeError('synthetic_fixture_exists_inspect_before_repeat')
     (root / 'photos').mkdir(parents=True, mode=0o700)

@@ -238,7 +238,7 @@ class EvidenceGateVerifier:
             if not path or not Path(path).expanduser().is_file():
                 raise EvidenceGateInputError("existing CAMROLL_BUDGET_DB is required")
             source_ledger = BudgetLedger(path, expected_limit_cny=600)
-        self.ledger = BudgetLedger(source_ledger.path, expected_limit_cny=600)
+        self.ledger = source_ledger.with_expected_limit(600)
         self.ledger.check_limit()
         self.request_namespace = request_namespace or getattr(client, "request_namespace", None)
         if not isinstance(self.request_namespace, str) or len(self.request_namespace) > 96 or not _IDENTIFIER.fullmatch(self.request_namespace):

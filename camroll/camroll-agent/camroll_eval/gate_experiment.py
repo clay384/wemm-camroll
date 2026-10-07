@@ -2,7 +2,8 @@
 
 Index provenance and inference settings are deliberately separate. The original
 album is opened read-only, with its original asset boundary and configuration.
-No build, old-run resume, answer replay, or snapshot rewriting is supported.
+No build, in-place old-run resume, request replay, or snapshot rewriting is supported.
+Authorized continuations create a separate run with explicit immutable ancestry.
 """
 from __future__ import annotations
 
@@ -219,13 +220,14 @@ def gate_summary(state):
 
 class GateBackend:
     """New inference transport over the unchanged original index configuration."""
-    def __init__(self, *, index_binding, inference, run_id, journal_path, on_gate_event=None, on_verifier_call=None):
+    def __init__(self, *, index_binding, inference, run_id, journal_path, on_gate_event=None, on_verifier_call=None, ledger=None):
         from camroll_agent.qwen import QwenClient
         from camroll_agent.retrieval import make_retrieval_clients
         self.binding, self.inference = index_binding, inference_config(inference)
         self.embedding, self.reranker = make_retrieval_clients(index_binding.experiment_config)
+        budget_options = {"ledger": ledger} if ledger is not None else {}
         self.qwen = QwenClient(model=self.inference.generation_model, expected_limit_cny=600,
-            request_namespace=run_id, request_journal_path=journal_path, strict_response_model=True)
+            request_namespace=run_id, request_journal_path=journal_path, strict_response_model=True, **budget_options)
         self.on_gate_event = on_gate_event
         self.verifier = None
         if self.inference.gate_policy != "off":
@@ -325,13 +327,16 @@ def validator_failure(value):
 
 
 class GateRunner(Runner):
-    def __init__(self, *args, backend_factory=GateBackend, **kwargs):
+    def __init__(self, *args, backend_factory=GateBackend, budget_ledger=None, **kwargs):
         super().__init__(*args, backend_factory=backend_factory, **kwargs)
         self._backend = None
         self._binding = None
         self._memory = self._parent_path = None
         self._stop_reason = None
         self._call_context = threading.local()
+        self._budget_ledger = budget_ledger
+        self._continuation = None
+        self._inherited_items = {}
 
     def _stop(self, reason):
         self._stop_reason = self._stop_reason or reason
@@ -345,7 +350,7 @@ class GateRunner(Runner):
                 status = self._backend.budget()
                 if status.get("limit_cny") != 600:
                     self._stop("budget_limit_changed")
-                elif status.get("uncertain_requests", 0):
+                elif status.get("blocking_uncertain_requests", status.get("uncertain_requests", 0)):
                     self._stop("request_uncertain")
                 elif status.get("remaining_cny", 0) <= 0:
                     self._stop("budget_exceeded")
@@ -366,12 +371,19 @@ class GateRunner(Runner):
 
     def _evaluate(self, row, backend, memory, version, config, media, run_id):
         """One fresh conversation, including failed model turns, without retries."""
-        item = initial_item(row)
+        seed = self._inherited_items.get(row["qa_id"])
+        item = copy.deepcopy(seed) if seed else initial_item(row)
         started = time.monotonic()
         timeline = {"started_at": now_iso(), "started_at_epoch": time.time()}
-        records, history, last = [], [], {}
+        records = copy.deepcopy(item.get("runtime_turns") or []) if seed else []
+        history = copy.deepcopy(item.get("conversation_history") or []) if seed else []
+        last = {}
         definitions = Dataset.turns(row)
-        item["gate_events"] = []
+        if not seed:
+            item["gate_events"] = []
+        else:
+            item["inherited_timing_breakdown"] = copy.deepcopy(item.get("timing_breakdown"))
+            item["record_provenance"] = {"kind": "continued_question", "parent_run_id": self._continuation.metadata["parent_run_id"]}
         try:
             self._binding.validate(memory, self._parent_path)
             agent = backend.agent(memory, config)
@@ -384,6 +396,8 @@ class GateRunner(Runner):
             item["infrastructure_error"] = {"error_type": type(exc).__name__, "error_code": "index_binding_changed"}
             agent = None
         for index, definition in enumerate(definitions):
+            if index < len((seed or {}).get("runtime_turns") or []):
+                continue
             if self._cancelled():
                 break
             self._call_context.value = {"run_id": run_id, "qa_id": row["qa_id"], "turn_index": index, "role": "agent"}
@@ -434,6 +448,8 @@ class GateRunner(Runner):
                 "judge": {"score": None, "reason": "pending" if eligible else category},
                 "task_judge": {"correct": None, "actual_action": None, "reason": "pending" if eligible else category},
                 "evidence_judge": {"score": None, "reason": "disabled"}}
+            if self._continuation:
+                record["record_provenance"] = {"kind": "new", "run_id": run_id, "turn_index": index}
             metric_response = response if eligible else {**response, "selected_image_ids": [], "selected_event_ids": []}
             add_media_metrics(record, metric_response, media)
             records.append(record)
@@ -492,6 +508,8 @@ class GateRunner(Runner):
         queue_ms = max(0., (epoch - timeline.get("judge_queued_at_epoch", epoch)) * 1000)
         definitions, records = Dataset.turns(row), item["runtime_turns"]
         for index, record in enumerate(records):
+            if (record.get("record_provenance") or {}).get("kind") == "inherited":
+                continue
             if not record["judge_eligible"]:
                 continue
             if self._cancelled():
@@ -560,7 +578,8 @@ class GateRunner(Runner):
             atomic_json(self._path / "run.json", state)
 
     def run_gate(self, *, run_id, suite_id, group, source_album_id, source_run_id,
-                 source_evaluation_root=None, strict=True, expected_snapshot=FIXED_SNAPSHOT, lock_held=False):
+                 source_evaluation_root=None, strict=True, expected_snapshot=FIXED_SNAPSHOT, lock_held=False,
+                 continuation_parent=None, acknowledged_call_ids=()):
         if not lock_held:
             self.acquire()
         writable, sampler = False, None
@@ -618,14 +637,32 @@ class GateRunner(Runner):
             atomic_json(self._path / "index-binding.json", self._binding.as_dict())
             atomic_json(self._path / "source-album-hashes.json", dict(self._binding.album_hashes))
             atomic_json(self._path / "media_mapping.json", media)
+            if continuation_parent:
+                from .gate_continuation import ContinuationParent
+                scoped_ids = {ack.call_id for ack in getattr(self._budget_ledger, "acknowledged_uncertain", ())}
+                if not scoped_ids or set(acknowledged_call_ids) != scoped_ids:
+                    raise ValueError("Continuation must carry the exact scoped budget acknowledgment")
+                self._continuation = ContinuationParent(continuation_parent, state=self._state,
+                    dataset=dataset, binding=self._binding, acknowledged_call_ids=acknowledged_call_ids)
+                self._continuation.materialize(self._path)
+                self._inherited_items = self._continuation.items
+                self._state["continuation"] = self._continuation.metadata
+                self._state["items"] = [copy.deepcopy(item) for item in self._inherited_items.values()]
+                for item in self._state["items"]:
+                    atomic_json(self._path / "items" / (safe_id(item["qa_id"]) + ".json"), item)
+                self._state["timing_note"] = "Independent continuation; imported measurements retain their source timings. New phase and journal measure only new execution."
+                self._save()
+            elif acknowledged_call_ids:
+                raise ValueError("Inherited request identities require an explicit continuation parent")
             journal = self._path / "request-journal.sqlite"
             self._state["request_journal_path"] = str(journal)
             self._save()
+            budget_options = {"ledger": self._budget_ledger} if self._budget_ledger is not None else {}
             self._backend = self.backend_factory(index_binding=self._binding, inference=profile, run_id=run_id,
                 journal_path=journal, on_gate_event=lambda event: self._event("gate_events.jsonl", event),
-                on_verifier_call=lambda event: self._event("verifier_calls.jsonl", event))
+                on_verifier_call=lambda event: self._event("verifier_calls.jsonl", event), **budget_options)
             judge = self.judge_factory(cancel=self.cancel, on_call=self._judge_call, model=profile.judge_model,
-                request_namespace=run_id, request_journal_path=journal, expected_limit_cny=600)
+                request_namespace=run_id, request_journal_path=journal, expected_limit_cny=600, **budget_options)
             if judge.protocol() != parent["judge_protocol"]:
                 raise ValueError("Final Judge protocol differs from original frozen evaluation")
             self._state.update(judge_protocol=judge.protocol(), judge_model=profile.judge_model, budget_before=self._backend.budget())
@@ -643,6 +680,9 @@ class GateRunner(Runner):
             with capture, concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
                 pending = set()
                 for row in dataset.rows:
+                    inherited = self._inherited_items.get(row["qa_id"])
+                    if inherited and len(inherited["runtime_turns"]) == len(dataset.turns(row)):
+                        continue
                     if len(pending) >= 4:
                         done, pending = concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED)
                         for future in done:
@@ -687,6 +727,8 @@ class GateRunner(Runner):
                     if self._binding:
                         try:
                             self._binding.validate(self._memory, self._parent_path)
+                            if self._continuation:
+                                self._continuation.validate()
                             self._state["source_unchanged"] = True
                         except Exception:
                             self._state["source_unchanged"] = False

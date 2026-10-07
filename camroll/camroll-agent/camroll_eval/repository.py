@@ -98,16 +98,35 @@ class Repository:
         # Project execution separately, without changing the stored summary
         # or inferring an outcome for any unrecorded/in-flight turn.
         items = state.get('items') or []
-        return {'report_progress': {
+        result = {'report_progress': {
             'finished_question_count': sum(row.get('final_turn_executed') is True for row in items),
             'executed_turn_count': sum(len(row.get('runtime_turns') or []) for row in items)}}
+        # Public labels contain identities, never filesystem paths. Ancestry is
+        # verified by the independent exporter; this view never follows it.
+        metadata = state.get('reference') or state.get('continuation')
+        if isinstance(metadata, dict):
+            provenance = {'kind': 'reference' if state.get('reference') else 'continuation'}
+            for key in ('parent_run_id', 'source_suite_id'):
+                try:
+                    provenance[key] = safe_id(metadata.get(key))
+                except ValueError:
+                    pass
+            digest = metadata.get('parent_run_sha256')
+            if isinstance(digest, str) and len(digest) == 64 and all(c in '0123456789abcdef' for c in digest):
+                provenance['parent_run_sha256'] = digest
+            for key in ('inherited_turn_count', 'new_turn_count'):
+                if type(metadata.get(key)) is int and 0 <= metadata[key] <= 111:
+                    provenance[key] = metadata[key]
+            result['report_provenance'] = provenance
+        return result
 
     def get_brief(self, run_id):
         return copy.deepcopy(self.brief(self._load_cached(run_id)))
 
     def detail(self, run_id):
         state = self._load_cached(run_id)
-        result = {key: value for key, value in state.items() if key not in {"items", "media_mapping", "qa_ids"}}
+        result = {key: value for key, value in state.items()
+                  if key not in {"items", "media_mapping", "qa_ids", "reference", "continuation"}}
         result.update(self._report_fields(state))
         result["items"] = [{key: row.get(key) for key in ("qa_id", "question", "answer", "task_type", "angle", "difficulty",
                            "answerability", "execution_status", "judge_status", "retrieval_precision",

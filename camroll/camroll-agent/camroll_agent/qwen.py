@@ -203,7 +203,7 @@ class QwenClient:
         self.ledger = ledger or BudgetLedger(ledger_path, float(os.environ.get("CAMROLL_BUDGET_CNY", "300")),
                                             expected_limit_cny=expected_limit_cny)
         if ledger is not None and expected_limit_cny is not None:
-            self.ledger = BudgetLedger(ledger.path, expected_limit_cny=expected_limit_cny)
+            self.ledger = ledger.with_expected_limit(expected_limit_cny)
         self.request_namespace = request_namespace or uuid.uuid4().hex
         self._request_ordinal = 0
         self.journal = RequestJournal(request_journal_path or self.ledger.path.with_name("cloud_requests.sqlite"))

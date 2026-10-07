@@ -38,7 +38,7 @@ class Judge(JudgeProtocol):
         self._qwen = None
         self.ledger = ledger
         if ledger is not None and expected_limit_cny is not None:
-            self.ledger = BudgetLedger(ledger.path, expected_limit_cny=expected_limit_cny)
+            self.ledger = ledger.with_expected_limit(expected_limit_cny)
         self.stop_reason = None
         self.request_namespace = request_namespace
         self._request_context = contextvars.ContextVar('judge_request_context', default=None)

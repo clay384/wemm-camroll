@@ -6,6 +6,8 @@ call, and uncertain calls remain charged at their reservation until reconciled.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import asdict, dataclass, fields
+import hashlib
 import json
 import math
 import os
@@ -34,9 +36,125 @@ class RequestReplayError(RuntimeError):
         self.code = code
 
 
+def _row_sha256(row) -> str:
+    return hashlib.sha256(json.dumps(list(row), ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def _read_only_row(path, query, values):
+    connection = sqlite3.connect(Path(path).as_uri() + "?mode=ro", uri=True, timeout=30)
+    try:
+        return connection.execute(query, values).fetchone()
+    finally:
+        connection.close()
+
+
+_LEDGER_ACK_ROW = "SELECT id,created,status,reserved_units,charged_units,metadata FROM budget_calls WHERE id=?"
+_JOURNAL_ACK_ROW = "SELECT request_id,payload_hash,call_id,status,created,response,error_code FROM cloud_requests WHERE request_id=?"
+
+
+@dataclass(frozen=True)
+class UncertainRequestAcknowledgement:
+    """Explicit permission to continue elsewhere while one old charge stays held.
+
+    This is a run-scoped allowlist entry, not reconciliation and not permission
+    to replay the old request. Paths, file identities and complete rows are
+    frozen so a different ledger, altered request, or changed reservation fails
+    closed. Callers must supply the specifically authorized request identity.
+    """
+    ledger_path: str
+    journal_path: str
+    ledger_device: int
+    ledger_inode: int
+    journal_device: int
+    journal_inode: int
+    call_id: str
+    request_id: str
+    payload_hash: str
+    reserved_units: int
+    ledger_row_sha256: str
+    journal_row_sha256: str
+
+    def __post_init__(self):
+        for name in ("ledger_path", "journal_path"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not Path(value).is_absolute() or str(Path(value).resolve()) != value:
+                raise ValueError("Acknowledgement paths must be canonical absolute paths")
+        if self.ledger_path == self.journal_path:
+            raise ValueError("Acknowledgement requires separate ledger and journal files")
+        if any(type(getattr(self, name)) is not int or getattr(self, name) < 0 for name in
+               ("ledger_device", "ledger_inode", "journal_device", "journal_inode")):
+            raise ValueError("Invalid acknowledged file identity")
+        if type(self.reserved_units) is not int or self.reserved_units <= 0:
+            raise ValueError("Acknowledgement must retain the positive original reservation")
+        if any(not isinstance(value, str) or not value or len(value) > 1000 for value in (self.call_id, self.request_id)):
+            raise ValueError("Explicit acknowledged request identity is required")
+        for value in (self.payload_hash, self.ledger_row_sha256, self.journal_row_sha256):
+            if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+                raise ValueError("Acknowledgement hashes must be SHA256 values")
+
+    def as_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value):
+        if not isinstance(value, dict) or set(value) != {field.name for field in fields(cls)}:
+            raise ValueError("Acknowledgement fields differ from the frozen contract")
+        return cls(**value)
+
+    @staticmethod
+    def _check_rows(ledger_row, journal_row, *, call_id, request_id, payload_hash, reserved_units):
+        if (ledger_row is None or journal_row is None
+                or ledger_row[0] != call_id or ledger_row[2] != "uncertain"
+                or ledger_row[3] != reserved_units or ledger_row[4] != 0
+                or journal_row[0] != request_id or journal_row[1] != payload_hash
+                or journal_row[2] != call_id or journal_row[3] != "uncertain"
+                or journal_row[5] is not None):
+            raise RequestUncertain("Acknowledged request state or identity changed; new submissions stop")
+        try:
+            metadata = json.loads(ledger_row[5])
+        except (TypeError, ValueError):
+            raise RequestUncertain("Acknowledged ledger metadata is invalid") from None
+        if (not isinstance(metadata, dict) or metadata.get("request_id") != request_id or not journal_row[6]
+                or metadata.get("error_code") != journal_row[6]):
+            raise RequestUncertain("Acknowledged ledger and journal do not identify the same unknown request")
+
+    @classmethod
+    def capture(cls, ledger_path, journal_path, *, call_id, request_id, payload_hash, reserved_units):
+        """Read a caller-selected identity; never discovers or authorizes unknowns."""
+        ledger, journal = Path(ledger_path).expanduser().resolve(), Path(journal_path).expanduser().resolve()
+        try:
+            ledger_stat, journal_stat = ledger.stat(), journal.stat()
+            ledger_row = _read_only_row(ledger, _LEDGER_ACK_ROW, (call_id,))
+            journal_row = _read_only_row(journal, _JOURNAL_ACK_ROW, (request_id,))
+        except (OSError, sqlite3.Error):
+            raise RequestUncertain("Acknowledged request evidence is unavailable") from None
+        cls._check_rows(ledger_row, journal_row, call_id=call_id, request_id=request_id,
+                        payload_hash=payload_hash, reserved_units=reserved_units)
+        return cls(str(ledger), str(journal), ledger_stat.st_dev, ledger_stat.st_ino,
+                   journal_stat.st_dev, journal_stat.st_ino, call_id, request_id, payload_hash, reserved_units,
+                   _row_sha256(ledger_row), _row_sha256(journal_row))
+
+    def validate(self, ledger_path, connection):
+        try:
+            ledger, journal = Path(ledger_path).resolve(), Path(self.journal_path)
+            ledger_stat, journal_stat = ledger.stat(), journal.stat()
+            if (str(ledger) != self.ledger_path or (ledger_stat.st_dev, ledger_stat.st_ino) != (self.ledger_device, self.ledger_inode)
+                    or (journal_stat.st_dev, journal_stat.st_ino) != (self.journal_device, self.journal_inode)):
+                raise RequestUncertain("Acknowledged ledger or journal file identity changed")
+            ledger_row = connection.execute(_LEDGER_ACK_ROW, (self.call_id,)).fetchone()
+            journal_row = _read_only_row(journal, _JOURNAL_ACK_ROW, (self.request_id,))
+            self._check_rows(ledger_row, journal_row, call_id=self.call_id, request_id=self.request_id,
+                             payload_hash=self.payload_hash, reserved_units=self.reserved_units)
+            if _row_sha256(ledger_row) != self.ledger_row_sha256 or _row_sha256(journal_row) != self.journal_row_sha256:
+                raise RequestUncertain("Acknowledged request evidence changed")
+        except (OSError, sqlite3.Error):
+            raise RequestUncertain("Acknowledged request evidence is unavailable") from None
+
+
 class BudgetLedger:
     def __init__(self, path: str | Path, limit_cny: float = 300.0, *,
-                 expected_limit_cny: float | None = None):
+                 expected_limit_cny: float | None = None,
+                 acknowledged_uncertain=()):
         if not math.isfinite(limit_cny) or not 0 < limit_cny <= 600:
             raise ValueError("The authorized budget must be within (0, 600] CNY")
         if expected_limit_cny is not None and (not math.isfinite(expected_limit_cny) or not 0 < expected_limit_cny <= 600):
@@ -45,6 +163,12 @@ class BudgetLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.limit_units = round(limit_cny * 1_000_000)
         self.expected_limit_units = None if expected_limit_cny is None else round(expected_limit_cny * 1_000_000)
+        self.acknowledged_uncertain = tuple(acknowledged_uncertain)
+        if (any(not isinstance(ack, UncertainRequestAcknowledgement) for ack in self.acknowledged_uncertain)
+                or len({ack.call_id for ack in self.acknowledged_uncertain}) != len(self.acknowledged_uncertain)):
+            raise ValueError("Uncertain request acknowledgements must be distinct frozen identities")
+        if self.acknowledged_uncertain and self.expected_limit_units != 600_000_000:
+            raise ValueError("Acknowledged continuation requires the unchanged 600 CNY guard")
         with self._connect() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS budget_calls (
@@ -69,7 +193,17 @@ class BudgetLedger:
                          (self.limit_units,))
             self.limit_units = conn.execute(
                 "SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
+            self._acknowledged_ids(conn)
         os.chmod(self.path, 0o600)
+
+    def with_expected_limit(self, expected_limit_cny):
+        return BudgetLedger(self.path, expected_limit_cny=expected_limit_cny,
+                            acknowledged_uncertain=self.acknowledged_uncertain)
+
+    def _acknowledged_ids(self, connection):
+        for ack in self.acknowledged_uncertain:
+            ack.validate(self.path, connection)
+        return {ack.call_id for ack in self.acknowledged_uncertain}
 
     def raise_limit(self, limit_cny: float, *, expected_previous_cny: float, reason: str) -> dict:
         if not math.isfinite(limit_cny) or not 0 < limit_cny <= 600 or not reason.strip():
@@ -133,8 +267,9 @@ class BudgetLedger:
             limit = conn.execute("SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
             if self.expected_limit_units is not None and limit != self.expected_limit_units:
                 raise BudgetLimitChanged("Cumulative budget ceiling changed; new submissions are stopped")
-            if self.expected_limit_units is not None and conn.execute(
-                    "SELECT EXISTS(SELECT 1 FROM budget_calls WHERE status='uncertain')").fetchone()[0]:
+            acknowledged = self._acknowledged_ids(conn)
+            unknown = {row[0] for row in conn.execute("SELECT id FROM budget_calls WHERE status='uncertain'")}
+            if self.expected_limit_units is not None and unknown - acknowledged:
                 raise RequestUncertain("An earlier cloud charge is uncertain; new submissions are stopped")
             committed = conn.execute("""SELECT COALESCE(SUM(CASE
                 WHEN status IN ('reserved','uncertain') THEN reserved_units
@@ -150,6 +285,8 @@ class BudgetLedger:
         """Settle known usage, release explicit rejection, or retain uncertain cost."""
         if amount_cny is not None and (amount_cny < 0 or not math.isfinite(amount_cny)):
             raise ValueError("Invalid charge")
+        if any(ack.call_id == call_id for ack in self.acknowledged_uncertain):
+            raise RequestUncertain("Acknowledgement does not authorize settling or releasing the held request")
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT status, metadata FROM budget_calls WHERE id=?", (call_id,)).fetchone()
@@ -166,13 +303,14 @@ class BudgetLedger:
 
     def summary(self) -> dict[str, Any]:
         with self._connect() as conn:
-            rows = conn.execute("SELECT status,reserved_units,charged_units,metadata FROM budget_calls").fetchall()
+            acknowledged = self._acknowledged_ids(conn)
+            rows = conn.execute("SELECT status,reserved_units,charged_units,metadata,id FROM budget_calls").fetchall()
             limit = conn.execute("SELECT value FROM budget_settings WHERE key='limit_units'").fetchone()[0]
         spent = sum(row[2] for row in rows)
         pending = sum(row[1] for row in rows if row[0] in ("reserved", "uncertain"))
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         roles: dict[str, dict] = {}
-        for status, reserved, charged, raw in rows:
+        for status, reserved, charged, raw, call_id in rows:
             metadata = json.loads(raw)
             role = str(metadata.get("role", "unknown"))
             item = roles.setdefault(role, {"requests": 0, "estimated_cny": 0.0, "reserved_cny": 0.0})
@@ -186,6 +324,9 @@ class BudgetLedger:
                 "reserved_cny": pending / 1_000_000,
                 "remaining_cny": max(0, limit - spent - pending) / 1_000_000,
                 "requests": len(rows), "uncertain_requests": sum(row[0] == "uncertain" for row in rows),
+                "acknowledged_uncertain_requests": len(acknowledged),
+                "blocking_uncertain_requests": sum(row[0] == "uncertain" and row[4] not in acknowledged for row in rows),
+                "acknowledged_reserved_cny": sum(row[1] for row in rows if row[4] in acknowledged) / 1_000_000,
                 "usage": usage, "roles": roles,
                 "note": "Usage-priced estimate; uncertain calls retain their full reservation."}
 
