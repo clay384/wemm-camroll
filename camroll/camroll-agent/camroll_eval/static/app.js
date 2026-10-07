@@ -13,6 +13,10 @@ function gateBatchBadge(r){
   const profile=state.profile;
   const known=profile?.schema_version==='camroll-flash-gate-v1'&&profile.groups?.length;
   const current=known&&profile.groups.some(group=>group.run_id===r.run_id);
+  if(current&&profile.comparison_status==='incomplete'&&profile.execution_order?.length===1){
+    const source=profile.groups.find(group=>group.run_id===r.run_id);
+    return `<span class="badge">${source.reused?'当前组合 · 引用封存结果':'当前组合 · 独立新增'}</span>`;
+  }
   return `<span class="badge">${!known?'批次未确认':current?'当前批次':'历史批次 · 单独比较'}</span>`;
 }
 const label=r=>r.mode==='gate_ab'?`${r.inference_config?.group||r.run_id} · ${r.inference_config?.generation_model||''} · WeMM · M4`:r.mode==='supplement'?`恢复后${r.qa_count??64}题补测·复用快照 · ${r.experiment||'W38Max'}`:r.experiment?`${r.experiment} · ${r.experiment_config?.generation_model||''} · ${r.experiment_config?.embedding_backend==='qwen'?'Qwen Embedding + Reranker':'WeMM'} · ${r.config}`:r.system_id==='sentrix'?'Sentrix · '+(r.model_name||r.model_profile||'历史模型')+' · '+(r.mode==='reuse'?'复用测评':'全链路'):`${(r.config||'M1')==='M1'?'历史 M1 参考':'原协议 CamRoll'} · WeMM · `+(r.mode==='composite'?'补齐后合并':r.mode==='repair'?'定点补跑':r.formal_protocol===false?'smoke':'首次结果');
@@ -70,7 +74,7 @@ function renderProfile(p){
     const observed=new Map(state.runs.map(run=>[run.run_id,run]));
     const models={'F37-Off':'qwen3.7-flash · Gate-Off','F37-On':'qwen3.7-flash · Gate-On','F38-Off':'qwen3.8-flash · Gate-Off','F38-On':'qwen3.8-flash · Gate-On',Q37:'Qwen 检索 + qwen3.7-flash',Q38:'Qwen 检索 + qwen3.8-flash',W37:'WeMM + qwen3.7-flash',W38Max:'WeMM + qwen3.8-max'};
     $('#comparison-profile').hidden=false;
-    $('#comparison-profile').innerHTML=`<div class="panel-body"><div class="profile-heading"><div><h2>${esc(p.title||'Qwen / WeMM 四组对照')}</h2><p class="notes">M4 · 355 张图 · 100 道题 / 111 轮 · Agent 1 / Judge 4 · Doubao 统一评分</p></div>${badge(p.suite_status||'running')}</div><div class="group-grid">${p.groups.map(group=>{const run=observed.get(group.run_id),counts=run?runCounts(run):{plannedQa:group.qa_count||100,validQa:0};return `<button class="group-card secondary" ${run?`data-profile-run="${esc(group.run_id)}"`:'disabled'}><strong>${esc(group.name)}</strong><span>${esc(models[group.name]||group.name)}</span>${badge(run?.status||'not_started')}<small>有效评分 ${countRatio(counts.validQa??0,counts.plannedQa)} · ${run?'查看运行记录':'等待本组运行'}</small></button>`;}).join('')}</div><div class="actions"><button id="compare-four" class="secondary">比较已生成的四组记录</button></div><p class="notes">${esc(p.note||'四组均为独立冷建库，比较完整系统效果。固定100题正确率；最终交付P/R/F1固定81题，未执行贡献零。')}</p><div class="historical-note">历史 M1：75 正确 / 14 部分 / 11 错误，仅作历史参考。${(p.historical||[]).filter(row=>row.run_id&&observed.has(row.run_id)).map(row=>` <button class="quiet" data-profile-run="${esc(row.run_id)}">${esc(row.label||'查看历史记录')}</button>`).join('')}</div></div>`;
+    $('#comparison-profile').innerHTML=`<div class="panel-body"><div class="profile-heading"><div><h2>${esc(p.title||'Qwen / WeMM 四组对照')}</h2><p class="notes">M4 · 355 张图 · 100 道题 / 111 轮 · Agent 1 / Judge 4 · Doubao 统一评分</p></div>${badge(p.comparison_status||p.suite_status||'running')}</div>${remainingProfileNote(p)}<div class="group-grid">${p.groups.map(group=>{const run=observed.get(group.run_id),counts=run?runCounts(run):{plannedQa:group.qa_count||100,validQa:0};return `<button class="group-card secondary" ${run?`data-profile-run="${esc(group.run_id)}"`:'disabled'}><strong>${esc(group.name)}</strong><span>${esc(models[group.name]||group.name)}</span>${badge(run?.status||'not_started')}${p.comparison_status?`<small>${group.reused?'只读引用此前封存的结果':'本次独立新增'}</small>`:''}<small>有效评分 ${countRatio(counts.validQa??0,counts.plannedQa)} · ${run?'查看运行记录':'等待本组运行'}</small></button>`;}).join('')}</div><div class="actions"><button id="compare-four" class="secondary">比较已生成的四组记录</button></div><p class="notes">${esc(p.note||'四组均为独立冷建库，比较完整系统效果。固定100题正确率；最终交付P/R/F1固定81题，未执行贡献零。')}</p><div class="historical-note">历史 M1：75 正确 / 14 部分 / 11 错误，仅作历史参考。${(p.historical||[]).filter(row=>row.run_id&&observed.has(row.run_id)).map(row=>` <button class="quiet" data-profile-run="${esc(row.run_id)}">${esc(row.label||'查看历史记录')}</button>`).join('')}</div></div>`;
     document.querySelectorAll('[data-profile-run]').forEach(button=>button.onclick=()=>openRun(button.dataset.profileRun));
     const available=p.groups.map(group=>group.run_id).filter(id=>observed.has(id));
     $('#compare-four').disabled=available.length<2;
@@ -83,6 +87,10 @@ function renderProfile(p){
     for(const [button,key] of [['#original-four','original_main'],['#repaired-four','repaired_main']])$(button).onclick=()=>{
       state.selected=new Set([...(p[key]||[]),...($('#include-kimi').checked?(p.auxiliary||[]):[])]);renderRuns();$('#compare').click();
     };
+}
+function remainingProfileNote(profile){
+  if(profile.comparison_status!=='incomplete'||profile.execution_order?.join(',')!=='F38-On')return '';
+  return `<div class="notice"><b>本次只独立执行F38-On；四组比较仍未完整</b><p>前三组保留此前封存的结果和实际来源。F38-Off的阻断与未执行轮次不被替换；旧未知请求及预留不重发、不释放。${profile.remaining_group_status==='passed'?'本次F38-On已执行及完成必要评分；这不代表四组完整。':'新组运行期间分别查看进度；终态导出并核对全部来源哈希后开放跨批比较。'}</p></div>`;
 }
 $('#refresh').addEventListener('click',()=>refresh());
 $('#close-dialog').addEventListener('click',()=>$('#item-dialog').close());

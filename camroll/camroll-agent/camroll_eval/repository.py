@@ -7,7 +7,7 @@ from pathlib import Path
 import shutil
 import threading
 
-from .common import read_json, atomic_json, safe_id, sha256, now_iso
+from .common import read_json, atomic_json, safe_id, sha256, now_iso, object_hash
 from .metrics import summary
 
 
@@ -313,6 +313,52 @@ class Repository:
             raise
         return run_id
 
+    def _remaining_comparison_scope(self, states):
+        """One terminal, hash-bound four-run comparison; never rewrite suite IDs."""
+        path = self.root / 'remaining-comparison.json'
+        if not path.is_file() or path.is_symlink() or path.resolve().parent != self.root or len(self.roots) < 2:
+            return None
+        try:
+            scope = read_json(path)
+            expected = ('F37-Off', 'F37-On', 'F38-Off', 'F38-On')
+            entries = scope['runs']
+            if (scope.get('schema_version') != 'camroll-flash-gate-remaining-comparison-v1'
+                    or scope.get('protocol') != 'camroll-flash-gate-v1'
+                    or scope.get('comparison_complete') is not False
+                    or tuple(row['group'] for row in entries) != expected
+                    or len({row['run_id'] for row in entries}) != 4
+                    or not {state['run_id'] for state in states} <= {row['run_id'] for row in entries}
+                    or not scope.get('index_binding') or not scope.get('input_integrity')
+                    or any(not scope['input_integrity'].get(key) for key in ('qa_sha256', 'dataset_sha256'))):
+                return None
+            safe_id(scope['suite_id'])
+            safe_id(scope['source_suite_id'])
+            if scope['suite_id'] == scope['source_suite_id']:
+                return None
+            for index, row in enumerate(entries):
+                run_id = safe_id(row['run_id'])
+                source = self.path(run_id)
+                owning_root = self.roots[1] if index < 3 else self.root
+                expected_suite = scope['source_suite_id'] if index < 3 else scope['suite_id']
+                if (source.parent.parent.parent != owning_root or source.resolve() != source.absolute()
+                        or row.get('source') != ('history' if index < 3 else 'current')
+                        or row.get('suite_id') != expected_suite or sha256(source) != row.get('run_sha256')):
+                    return None
+                state = self._load_cached(run_id)
+                if (state.get('suite_id') != expected_suite or state.get('mode') != 'gate_ab'
+                        or state.get('formal_protocol') is not True
+                        or state.get('protocol_label') != scope['protocol']
+                        or state.get('inference_config', {}).get('group') != expected[index]
+                        or state.get('status') not in {'completed', 'completed_with_errors', 'blocked', 'failed', 'interrupted', 'cancelled'}
+                        or state.get('index_binding') != scope['index_binding']
+                        or state.get('input_integrity') != scope['input_integrity']
+                        or object_hash(state.get('qa_plan')) != scope.get('qa_plan_sha256')):
+                    return None
+            return {'suite_id': scope['suite_id'], 'source_suite_id': scope['source_suite_id'],
+                    'comparison_complete': False, 'source_hashes_verified': True}
+        except (ValueError, KeyError, TypeError, OSError):
+            return None
+
     def compare(self, run_ids):
         states = [self._load_cached(run_id) for run_id in run_ids]
         if not states:
@@ -322,6 +368,7 @@ class Repository:
         if any(state.get("formal_protocol") is False for state in states):
             raise ValueError("smoke runs are excluded from formal comparisons")
         gate_comparison = any(state.get('mode') == 'gate_ab' for state in states)
+        remaining_scope = None
         if gate_comparison:
             if not all(state.get('mode') == 'gate_ab' and state.get('protocol_label') == 'camroll-flash-gate-v1'
                        for state in states):
@@ -333,8 +380,10 @@ class Repository:
                 suites = [state.get('suite_id') for state in states]
                 if (any(not isinstance(suite, str) or not suite.strip() for suite in suites)
                         or len(set(suites)) != 1):
-                    raise ComparisonScopeError('Gate 对照只允许同一批次（suite_id）的记录；'
-                                               '历史批次请单独比较，缺少批次标识的记录只能单独查看。')
+                    remaining_scope = self._remaining_comparison_scope(states)
+                    if remaining_scope is None:
+                        raise ComparisonScopeError('Gate 对照只允许同一批次，或终态导出且全部来源哈希通过的固定续测组合；'
+                                                   '运行中的新批次与其他历史记录请单独查看。')
         qa_ids = list(dict.fromkeys(row["qa_id"] for state in states for row in (state.get("qa_plan") or state.get("items", []))))
         plans = {row['qa_id']: row for state in states for row in state.get('qa_plan', [])}
         maps = [{row["qa_id"]: row for row in state.get("items", [])} for state in states]
@@ -355,5 +404,6 @@ class Repository:
         return copy.deepcopy({"runs": [self.brief(state) for state in states], "rows": rows,
                 "same_qa_hash": len(qa_hashes) == 1 and None not in qa_hashes,
                 "same_dataset_hash": len(dataset_hashes) == 1 and None not in dataset_hashes,
+                "remaining_scope": remaining_scope,
                 "comparison_scope": "frozen_index_flash_gate_comparison" if gate_comparison else "contemporary_full_system_comparison" if contemporary else "historical_system_comparison",
-                "warning": "冻结 WeMM 索引上的 Flash × Gate 对照。Doubao同时担任事实Gate和独立最终评分，存在模型关联。album3为已见基准，不代表独立泛化能力。" if gate_comparison else "同期 M4 完整系统比较；不能单独归因于 embedding 或 reranker。" if contemporary else "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。"})
+                "warning": ("本次仅独立执行剩余F38-On；前三组只读引用此前封存的结果，F38-Off仍已阻断，四组比较尚未完整。" if remaining_scope else "") + ("冻结 WeMM 索引上的 Flash × Gate 对照。Doubao同时担任事实Gate和独立最终评分，存在模型关联。album3为已见基准，不代表独立泛化能力。" if gate_comparison else "同期 M4 完整系统比较；不能单独归因于 embedding 或 reranker。" if contemporary else "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。")})
