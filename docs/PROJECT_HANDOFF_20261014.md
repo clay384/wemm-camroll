@@ -58,7 +58,7 @@ ssh asus@192.168.0.153
 
 ## 4. 源码、GitHub 与版本关系
 
-- 私有仓库：<https://github.com/clay384/wemm-camroll>。
+- 仓库：<https://github.com/clay384/wemm-camroll>。**2026-10-14 GitHub API 核验当前为 PUBLIC**；10月7日发布时为 PRIVATE。本次没有更改仓库可见性，不能继续把历史私有状态写成当前状态。
 - 已发布的完整架构基线：`d8b38a54ab696bb72cabf1c7c661a747af31ffc2`。
 - 固定标签：`architecture/2026-10-07-v1`，不移动；Release：<https://github.com/clay384/wemm-camroll/releases/tag/architecture/2026-10-07-v1>。
 - 上述架构版本基于正式运行代码 `d49489fc33fde5e149d9be4a2a6aea9e4333b791`，补充文档和模型非权重定义。
@@ -67,7 +67,7 @@ ssh asus@192.168.0.153
 
 仓库保留应用架构、模型自定义 Python、结构配置、来源/依赖锁、测试与部署代码。**权重、私人照片、身份参考图、QA/GT、原始向量、数据库、云凭据、逐题记录在仓库外。** 完整克隆能理解代码和运行离线测试，但不能单靠仓库恢复私人相册。
 
-最后一次云端 GitHub 连接核验为 **2026-10-08**：本机 `gh` 可访问 `clay384` 的 9 个仓库（8 私有、1 公开），但 ChatGPT GitHub connector 的账号/安装授权列表为空，浏览器停在 ChatGPT 登录；**尚未验证云端实际读取**。不要把本机上传成功当成 ChatGPT 已有权限，也不要改为 public 来绕过授权。状态收据：`runtime_refs/github-access-20261008/connection-status.json`。新 Agent 若处理连接，应通过 connector 实际读取当前提交 README 与架构文件后再宣称完成。
+最后一次云端 GitHub 连接核验为 **2026-10-08**：本机 `gh` 可访问 `clay384` 的 9 个仓库（8 私有、1 公开），但 ChatGPT GitHub connector 的账号/安装授权列表为空，浏览器停在 ChatGPT 登录；**尚未验证云端实际读取**。这是当时的私有连接状态，不代表账号所有私有项目已授权。当前本仓库已公开，可通过公开 GitHub/Raw 地址读取源码；具体云端会话仍应实际读取验证。本次不更改其他仓库可见性。状态收据：`runtime_refs/github-access-20261008/connection-status.json`。新 Agent 若处理全账号连接，应通过 connector 实际读取已授权仓库后再宣称完成；单个公开仓库可读不能证明私有仓库访问权限。
 
 ## 5. 两套系统的架构边界
 
@@ -367,7 +367,7 @@ Mac 私人归档根：`/Users/zhanyiqi/Documents/camwwem/runtime_refs/`。
 | 事件同日顺序 | date＋ID而非完整拍摄时间 | 显式处理时区/缺失时间，合成回归后新建库版本 |
 | 共享快照产品入口 | 普通CLI仍校验建库模型，不能任意Flash覆盖 | 推理/索引配置分离扩展到通用服务，并保留资产绑定 |
 | thinking未开放 | 客户端请求/冻结配置固定False | 参数化、工具/结构化兼容和成本验证，新实验配置 |
-| 云ChatGPT访问 | 最后connector授权为空 | 完成官方连接并实际读取私有仓库验证 |
+| 全账号云ChatGPT访问 | 最后connector授权为空；本仓库现已公开 | 公共源码可独立读取；其他私有仓库仍需官方连接及实际验证 |
 
 F38的 `context_limit` 是本地发送前保护，不是云端已证明真实token超限，也不是模型能力不足的完整证据。冻结 `FATAL_CODES` 把它视为停组；本次不把它静默改为“这一题失败然后继续”，不自动续跑剩余213轮。F37-Off也仍有失败（最终引用、无进展、输出/工具契约），Off不代表系统已经无错。
 
@@ -429,6 +429,6 @@ node --check camroll/camroll-agent/camroll_eval/static/app.js
 - 8774只读报告增加2026-10-14 Gate-Off采用方案；保留全部历史四组和不完整标记。
 - 独立报告release，不改旧冻结release、run、索引、模型、提示、评分与账本。
 - 当前观测/部署/回读验证在 `runtime_refs/handoff-20261014/`；远端报告进程及操作回执在 `runtime/report-gate-off-20261014/`。
-- 本次未发起任何模型、建库、问答、Judge或付费评测，也未控制GPU0/GPU1已有任务。云端GitHub读取仍需独立完成账号连接验收。
+- 本次未发起任何模型、建库、问答、Judge或付费评测，也未控制GPU0/GPU1已有任务。其他私有项目的云端GitHub访问仍需独立完成账号连接验收；本仓库当前公开状态与账号授权分别记录。
 
 新 Agent 第一项工作是核实本文的日期和实时状态，并按用户最新具体任务继续；不要把历史未完成实验自动恢复成正在执行的目标。

@@ -1,4 +1,6 @@
-# 在 ChatGPT 中阅读私有仓库
+# 云端阅读仓库与访问验证
+
+**2026-10-14观测：** GitHub API显示本仓库目前为PUBLIC，10月7日发布时为PRIVATE；本次未改变可见性。当前入口先读[完整交接与Gate-Off方案](PROJECT_HANDOFF_20261014.md)，再读源码地图。公开源码可以通过GitHub/Raw地址直接读取，但不能据此认定账号其他私有项目已授权。下面的连接流程保留为私有仓库访问说明；仓库公开状态和GitHub connector账号授权是不同事实。
 
 仓库：`clay384/wemm-camroll`。本架构版本标签：`architecture/2026-10-07-v1`。
 
