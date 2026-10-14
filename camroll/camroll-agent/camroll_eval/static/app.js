@@ -67,14 +67,15 @@ async function loadProfile(){
 }
 function renderProfile(p){
   if(p.groups?.length){
+    const gateOffPolicy=state.readOnly&&p.schema_version==='camroll-flash-gate-v1';
     if(p.schema_version==='camroll-flash-gate-v1'){
-      $('#report-description').textContent='四组共享冻结 WeMM 索引；对照两种 Flash 的 Gate-Off / On，失败与未评分全部保留。';
-      document.querySelector('.hero h1').textContent='Qwen Flash · Gate 四组对照';
+      $('#report-description').textContent=gateOffPolicy?'2026-10-14 当前采用方案：WeMM + qwen3.7-flash + M4 + Gate-Off。四组共享冻结 WeMM 索引；此页只读展示历史结果，不执行问答，失败与未评分全部保留。':'四组共享冻结 WeMM 索引；对照两种 Flash 的 Gate-Off / On，失败与未评分全部保留。';
+      document.querySelector('.hero h1').textContent=gateOffPolicy?'CamRoll · Gate-Off 采用方案与历史对照':'Qwen Flash · Gate 四组对照';
     }
     const observed=new Map(state.runs.map(run=>[run.run_id,run]));
     const models={'F37-Off':'qwen3.7-flash · Gate-Off','F37-On':'qwen3.7-flash · Gate-On','F38-Off':'qwen3.8-flash · Gate-Off','F38-On':'qwen3.8-flash · Gate-On',Q37:'Qwen 检索 + qwen3.7-flash',Q38:'Qwen 检索 + qwen3.8-flash',W37:'WeMM + qwen3.7-flash',W38Max:'WeMM + qwen3.8-max'};
     $('#comparison-profile').hidden=false;
-    $('#comparison-profile').innerHTML=`<div class="panel-body"><div class="profile-heading"><div><h2>${esc(p.title||'Qwen / WeMM 四组对照')}</h2><p class="notes">M4 · 355 张图 · 100 道题 / 111 轮 · Agent 1 / Judge 4 · Doubao 统一评分</p></div>${badge(p.comparison_status||p.suite_status||'running')}</div>${remainingProfileNote(p)}<div class="group-grid">${p.groups.map(group=>{const run=observed.get(group.run_id),counts=run?runCounts(run):{plannedQa:group.qa_count||100,validQa:0};return `<button class="group-card secondary" ${run?`data-profile-run="${esc(group.run_id)}"`:'disabled'}><strong>${esc(group.name)}</strong><span>${esc(models[group.name]||group.name)}</span>${badge(run?.status||'not_started')}${p.comparison_status?`<small>${group.reused?'只读引用此前封存的结果':'本次独立新增'}</small>`:''}<small>有效评分 ${countRatio(counts.validQa??0,counts.plannedQa)} · ${run?'查看运行记录':'等待本组运行'}</small></button>`;}).join('')}</div><div class="actions"><button id="compare-four" class="secondary">比较已生成的四组记录</button></div><p class="notes">${esc(p.note||'四组均为独立冷建库，比较完整系统效果。固定100题正确率；最终交付P/R/F1固定81题，未执行贡献零。')}</p><div class="historical-note">历史 M1：75 正确 / 14 部分 / 11 错误，仅作历史参考。${(p.historical||[]).filter(row=>row.run_id&&observed.has(row.run_id)).map(row=>` <button class="quiet" data-profile-run="${esc(row.run_id)}">${esc(row.label||'查看历史记录')}</button>`).join('')}</div></div>`;
+    $('#comparison-profile').innerHTML=`<div class="panel-body"><div class="profile-heading"><div><h2>${esc(gateOffPolicy?'Gate-Off 采用方案 · Flash Gate 历史对照':p.title||'Qwen / WeMM 四组对照')}</h2><p class="notes">M4 · 355 张图 · 100 道题 / 111 轮 · Agent 1 / Judge 4 · Doubao 统一评分</p></div>${badge(p.comparison_status||p.suite_status||'running')}</div>${gateOffPolicy?gateOffPolicyNote():''}${remainingProfileNote(p)}<div class="group-grid">${p.groups.map(group=>{const run=observed.get(group.run_id),counts=run?runCounts(run):{plannedQa:group.qa_count||100,validQa:0};return `<button class="group-card secondary" ${run?`data-profile-run="${esc(group.run_id)}"`:'disabled'}><strong>${esc(group.name)}</strong><span>${esc(models[group.name]||group.name)}</span>${badge(run?.status||'not_started')}${p.comparison_status?`<small>${group.reused?'只读引用此前封存的结果':'本次独立新增'}</small>`:''}<small>有效评分 ${countRatio(counts.validQa??0,counts.plannedQa)} · ${run?'查看运行记录':'等待本组运行'}</small></button>`;}).join('')}</div><div class="actions"><button id="compare-four" class="secondary">比较已生成的四组记录</button></div><p class="notes">${esc(p.note||'四组均为独立冷建库，比较完整系统效果。固定100题正确率；最终交付P/R/F1固定81题，未执行贡献零。')}</p><div class="historical-note">历史 M1：75 正确 / 14 部分 / 11 错误，仅作历史参考。${(p.historical||[]).filter(row=>row.run_id&&observed.has(row.run_id)).map(row=>` <button class="quiet" data-profile-run="${esc(row.run_id)}">${esc(row.label||'查看历史记录')}</button>`).join('')}</div></div>`;
     document.querySelectorAll('[data-profile-run]').forEach(button=>button.onclick=()=>openRun(button.dataset.profileRun));
     const available=p.groups.map(group=>group.run_id).filter(id=>observed.has(id));
     $('#compare-four').disabled=available.length<2;
@@ -87,6 +88,9 @@ function renderProfile(p){
     for(const [button,key] of [['#original-four','original_main'],['#repaired-four','repaired_main']])$(button).onclick=()=>{
       state.selected=new Set([...(p[key]||[]),...($('#include-kimi').checked?(p.auxiliary||[]):[])]);renderRuns();$('#compare').click();
     };
+}
+function gateOffPolicyNote(){
+  return `<div class="notice"><b>当前采用方案（2026-10-14）：WeMM + qwen3.7-flash + M4 + Gate-Off</b><p>推荐结果来源为 F37-Off。保留基础校验、既有修复行为和 M4 最终看图复核；新增统一修复与 Doubao 事实 Gate 默认关闭，外部 Doubao 最终质量及行为评分继续保留。</p><p>这里记录方案选择，不表示服务正在运行；8774 是只读报告页，不执行问答或启动评测。Gate-On 各组继续作为历史对照，原答案、分数、状态、分母和完整性标记保持不变。</p><p>F38 对照未完整，不能据此给出 F38 的 Gate 收益或两种 Flash 的完整比较结论；下方仍可查看所有已有记录和失败原因。</p></div>`;
 }
 function remainingProfileNote(profile){
   if(profile.comparison_status!=='incomplete'||profile.execution_order?.join(',')!=='F38-On')return '';

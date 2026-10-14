@@ -1,5 +1,7 @@
 # WeMM + CamRoll 工作约定
 
+- 2026-10-14最新接手文档：docs/PROJECT_HANDOFF_20261014.md。当前采用Gate-Off（WeMM + qwen3.7-flash + M4），保留基础校验、既有修复、最终复核和Doubao最终评分；新增事实Gate/统一修复默认关闭。历史On与全部冻结结果保留，不自动续跑旧四组；8774只读页展示采用方案不等于问答服务已运行。
+
 本仓库是两个既有项目的独立源码备份与后续开发仓库。先读 README.md、docs/ARCHITECTURE_CURRENT.md、docs/CODE_MAP.md 和 docs/releases/2026-10-07-architecture-v1.md。RESTORE.md 与 baseline/source_manifest.json 只针对对应的2026-09-16基线；`docs/project/` 是原样保存的历史交接及方案，当前用户授权优先于历史记录。
 
 - 云端初次阅读见 docs/CLOUD_READING.md；读取架构不需要权重或私人运行数据。不要为理解项目而直接运行付费、建库或部署入口。
