@@ -1,0 +1,212 @@
+"""WeMM-Embedding-2B 统一多模态嵌入 sidecar。
+
+为什么单独一个进程而不是塞进 8091：
+  WeMM 需要 transformers==5.2.0，而 8091 的 .venv 里是 5.11.0 且与 torch 已经
+  不兼容（import torch 后再 import transformers 会因 flex_attention.AuxRequest
+  缺失而崩）。换掉主环境有把现有 chinese-clip / bge 链路一起弄坏的风险，而这两条
+  链路此刻是在用的。独立 venv（.venv-wemm）把依赖完全隔离。
+
+为什么文本和图像是同一个模型：
+  与现状不同——现在是 chinese-clip(768d) 管图、bge-m3(1024d) 管文本，两个互不相干的
+  空间。WeMM 把两者放进同一个 2048 维空间，跨模态检索因此是原生能力，不再依赖
+  CLIP 文本塔去"对齐"图像空间。
+
+用法：
+  .venv-wemm/bin/python scripts/maintenance/wemm_embedder_sidecar.py --port 8102
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import threading
+
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+MODEL_PATH = os.getenv("SENTRIX_WEMM_MODEL_PATH", "/home/asus/models/WeMM-Embedding-2B")
+DEVICE = os.getenv("SENTRIX_WEMM_DEVICE", "cuda")
+# 原生维度。MRL 允许按请求截断到 config.matryoshka_dimensions 里的档位。
+DIMENSION = 2048
+MATRYOSHKA = (64, 128, 256, 512, 1024, 2048)
+
+_processor = None
+_model = None
+_torch = None
+_lock = threading.Lock()
+
+
+def _load():
+    global _processor, _model, _torch
+    if _model is None:
+        import torch
+        from transformers import AutoModel, AutoProcessor
+
+        _torch = torch
+        _processor = AutoProcessor.from_pretrained(MODEL_PATH, trust_remote_code=True)
+        _model = (
+            AutoModel.from_pretrained(MODEL_PATH, trust_remote_code=True, dtype=torch.bfloat16)
+            .to(DEVICE)
+            .eval()
+        )
+    return _processor, _model, _torch
+
+
+def _finish(vector, truncate_dim):
+    """重新归一化到单位长度。
+
+    模型自己用 bf16 做 F.normalize，实测出来是 0.9976~1.0031 而不是精确的 1.0
+    （bf16 约 ±0.4% 精度）。检索时用点积当余弦，这点偏差会等比缩放分数，在接近
+    的候选之间可能改变名次，所以在 float 域重算一次。MRL 截断同样会破坏单位长度。
+    """
+    if truncate_dim and truncate_dim < len(vector):
+        vector = vector[:truncate_dim]
+    norm = sum(value * value for value in vector) ** 0.5
+    if norm <= 0:
+        return vector
+    return [value / norm for value in vector]
+
+
+def _encode(items, truncate_dim):
+    """items: [{'text': ...}] 或 [{'image': '/abs/path.jpg'}]，逐个编码。"""
+    from qwen_vl_utils import process_vision_info
+
+    processor, model, torch = _load()
+    results = []
+    for item in items:
+        content = []
+        if "image" in item:
+            content.append({"type": "image", "image": item["image"]})
+        if "text" in item:
+            content.append({"type": "text", "text": str(item["text"])})
+        if not content:
+            raise ValueError("item 必须含 text 或 image")
+        messages = [{"role": "user", "content": content}]
+        prompt = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False)
+        images, videos, video_kwargs = process_vision_info(
+            messages, image_patch_size=16, return_video_kwargs=True, return_video_metadata=True)
+        if videos is not None:
+            videos, video_metadata = zip(*videos)
+            videos, video_metadata = list(videos), list(video_metadata)
+        else:
+            video_metadata = None
+        inputs = processor(
+            text=prompt, images=images, videos=videos, video_metadata=video_metadata,
+            return_tensors="pt", **video_kwargs,
+        ).to(DEVICE)
+        with _lock, torch.inference_mode():
+            # 逐条编码：批处理会因图像 patch 数不同而 pad，检索场景下不值得为此冒险。
+            embedding = model.embedding(**inputs)
+        vector = [float(value) for value in embedding[0].tolist()]
+        results.append(_finish(vector, truncate_dim))
+    return results
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _send(self, code, payload):
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _body(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        return json.loads(self.rfile.read(length) or b"{}")
+
+    def do_GET(self):
+        if self.path == "/stats":
+            # 显存分解诊断：allocated=活的张量，reserved=缓存分配器占住的高水位。
+            # 两者差得远说明峰值来自某次大请求，而不是权重本身。
+            import gc
+
+            gc.collect()
+            torch = _torch
+            if torch is None or not torch.cuda.is_available():
+                self._send(200, {"cuda": False})
+                return
+            free, total = torch.cuda.mem_get_info()
+            mib = 1024 * 1024
+            self._send(200, {
+                "cuda": True,
+                "device": torch.cuda.get_device_name(0),
+                "allocated_mib": round(torch.cuda.memory_allocated() / mib, 1),
+                "reserved_mib": round(torch.cuda.memory_reserved() / mib, 1),
+                "max_allocated_mib": round(torch.cuda.max_memory_allocated() / mib, 1),
+                "max_reserved_mib": round(torch.cuda.max_memory_reserved() / mib, 1),
+                "device_free_mib": round(free / mib, 1),
+                "device_total_mib": round(total / mib, 1),
+                "param_dtype": str(next(_model.parameters()).dtype) if _model is not None else None,
+                "param_count": sum(q.numel() for q in _model.parameters()) if _model is not None else 0,
+            })
+        elif self.path == "/health":
+            self._send(200, {
+                "status": "ok" if _model is not None else "loading",
+                "model": MODEL_PATH,
+                "dimension": DIMENSION,
+                "matryoshka_dimensions": list(MATRYOSHKA),
+                "device": DEVICE,
+            })
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        try:
+            body = self._body()
+            truncate = body.get("truncate_dim")
+            if truncate is not None:
+                truncate = int(truncate)
+                if truncate not in MATRYOSHKA:
+                    self._send(400, {"error": f"truncate_dim 必须是 {list(MATRYOSHKA)} 之一"})
+                    return
+            if self.path == "/embed_text":
+                vectors = _encode([{"text": body.get("text") or ""}], truncate)
+                self._send(200, {"vector": vectors[0], "model": MODEL_PATH, "dimension": len(vectors[0])})
+            elif self.path == "/embed_image":
+                path = str(body.get("path") or "")
+                if not path or not os.path.isfile(path):
+                    self._send(400, {"error": f"图像不存在: {path}"})
+                    return
+                vectors = _encode([{"image": path}], truncate)
+                self._send(200, {"vector": vectors[0], "model": MODEL_PATH, "dimension": len(vectors[0])})
+            elif self.path == "/reset_peak":
+                # 量「某次请求的激活峰值」时必须先把历史高水位清零，否则读到的
+                # 是进程启动以来的最大值。measure_embedder_cost.py 依赖它。
+                if _torch is not None and _torch.cuda.is_available():
+                    _torch.cuda.reset_peak_memory_stats()
+                self._send(200, {"reset": True})
+            elif self.path == "/embed_batch":
+                items = body.get("items") or []
+                if not isinstance(items, list) or not items:
+                    self._send(400, {"error": "items 必须是非空数组"})
+                    return
+                vectors = _encode(items, truncate)
+                self._send(200, {"vectors": vectors, "model": MODEL_PATH,
+                                 "dimension": len(vectors[0]) if vectors else 0})
+            else:
+                self._send(404, {"error": "not found"})
+        except Exception as exc:
+            self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default=os.getenv("SENTRIX_WEMM_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("SENTRIX_WEMM_PORT", "8102")))
+    args = parser.parse_args()
+    _load()
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    print(f"WeMM sidecar ready on {args.host}:{args.port} model={MODEL_PATH} device={DEVICE} dim={DIMENSION}",
+          flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

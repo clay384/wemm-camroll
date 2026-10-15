@@ -1,0 +1,41 @@
+import unittest
+from unittest.mock import patch
+
+from backend import app as ingest_app
+
+
+class _BackgroundTasks:
+    def __init__(self):
+        self.calls = []
+
+    def add_task(self, callable_, *args):
+        self.calls.append((callable_, args))
+
+
+class DeferredImportTests(unittest.TestCase):
+    def test_deferred_upload_does_not_start_pipeline_or_complete_batch(self):
+        background = _BackgroundTasks()
+        with patch.object(ingest_app.store, "complete_ingest_batch") as complete:
+            ingest_app._schedule_remote_import_processing(
+                background, ["asset-1"], "batch-1", True
+            )
+
+        complete.assert_not_called()
+        self.assertEqual(background.calls, [])
+
+    def test_non_deferred_upload_completes_batch_and_starts_pipeline(self):
+        background = _BackgroundTasks()
+        with patch.object(ingest_app.store, "complete_ingest_batch") as complete:
+            ingest_app._schedule_remote_import_processing(
+                background, ["asset-1"], "batch-1", False
+            )
+
+        complete.assert_called_once_with("batch-1")
+        self.assertEqual(
+            background.calls,
+            [(ingest_app.process_ingest_batch, (["asset-1"], "batch-1"))],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

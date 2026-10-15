@@ -1,5 +1,17 @@
 # CamRoll–WeMM 完整交接：Gate-Off 当前方案
 
+**2026-10-15 自建Q6验收终态：** [协议、验收与恢复记录](MINICPM47_Q6_THINKING_20261015.md)。Mac/Linux各1162项通过；基础探针通过，完整30项25通过／5失败，首次结构有效率84.31%；3题与100题按门槛未启动。60次调用均HTTP200、409052 tokens、API费用0；GPU1原任务未动，8774保留13个历史运行。
+
+**2026-10-15 自建Q6 Thinking连接验证：** [SSH/API与三项实际调用](MINICPM47_SELFHOST_CONNECT_20261015.md)。新服务器已连通；文本、原第2张及完整六图均HTTP200，图片严格JSON/ID通过，Thinking独立返回。原云端失败保留；这是连接探针，30项、3题WeMM及100题尚未在新配置运行。
+
+**2026-10-14 16:45 六图逐张与组合定位：** [18次诊断与失败证据](MINICPM47_IMAGE_ISOLATION_20261014.md)。第2张单图3/3被拒；其余5张单图及不含第2张的2至5张组合全部成功，包含第2张的已测组合均返回content_policy_violation。原六图验收仍未通过，100题未启动。本轮55320 tokens／0元，无新unknown。
+
+**2026-10-14 16:32 JSON兼容修复与验收结果：** [400根因、三次复现与最终回执](MINICPM47_JSON_FIX_20261014.md)。system布局和uniqueItems已修复，Mac/Linux各1152通过；30项验收12完成、1失败、17未执行。六图相同请求3/3均content_policy_violation；100题未启动。事实答错已改为非阻断，历史结果保留，本轮68877 tokens／0元，无新增unknown。
+
+**2026-10-14 15:50 SDK默认接入更新：** [Thinking省略测试、独立协议与验收阻断](MINICPM47_SDK_DEFAULTS_20261014.md)。默认文本／真实图JSON可用，但工具final格式、JSON决策接口及OCR准确性未通过能力门槛；30次／3题／100题未启动。Mac/Linux各1107通过、1跳过；本轮28711 tokens／0元，无新unknown。8774已显示新状态并保留历史，GPU1空闲。
+
+**2026-10-14 MiniCPM Thinking 接入：** [实现、真实探针失败与费用交接](MINICPM47_THINKING_20261014.md)。三种JSON模式真实图请求均HTTP 200但content为空，已按门槛停止；30次验收、3题端到端和100题未执行。8774已部署只读MiniCPM状态入口，历史结果保留。15:05按用户新指令终止GPU1上的vLLM任务，显存降至18MiB；15:06固定Thinking On配置仍无content；15:09用户提供的默认SDK文本示例正常返回，详见该交接的追加记录。
+
 文档日期：**2026-10-14，Asia/Shanghai**。适用项目：WeMM–CamRoll 相册问答系统及其独立 PhotoBench 评测。本文是新 Agent 的首读入口；替代旧文档中“默认继续四组 Gate 实验”的工作方向，保留旧实验事实和操作边界。
 
 本地交接目录：`/Users/zhanyiqi/Documents/camwwem/docs_wemm/`。源码仓库中的同版副本：`wemm-camroll/docs/PROJECT_HANDOFF_20261014.md`。配套详细源码阅读地图为源码仓库 `docs/CODE_MAP.md`；旧架构说明为 `docs/ARCHITECTURE_CURRENT.md`，其中运行状态按其标注日期理解。

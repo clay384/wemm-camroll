@@ -231,8 +231,19 @@ class Agent:
             raise ValueError("Unknown output gate policy")
         if gate_policy != "off" and evidence_verifier is None:
             raise ValueError("Gate-On requires an independent evidence verifier")
-        if inference_model is not None and inference_model not in ("qwen3.7-flash", "qwen3.8-flash"):
-            raise ValueError("Explicit inference override is limited to the two Flash models")
+        if inference_model is not None and inference_model not in ("qwen3.7-flash", "qwen3.8-flash", "MiniCPM-V-4.7-35B-A3B", "minicpm-v4.7-35b-a3b-q6-thinking"):
+            raise ValueError("Explicit inference override requires an approved model")
+        if inference_model == "MiniCPM-V-4.7-35B-A3B":
+            if llm is None or gate_policy != "off":
+                raise ValueError("MiniCPM inference requires an explicitly injected client and Gate-Off")
+            for client in (llm, vlm if vlm is not None else llm):
+                if getattr(client, "provider", None) != "modelbest":
+                    raise ValueError("MiniCPM inference requires a ModelBest provider binding")
+        selfhost = inference_model == "minicpm-v4.7-35b-a3b-q6-thinking"
+        if selfhost and (gate_policy != "off" or llm is None or any(
+                getattr(client, "provider", None) != "llamacpp-selfhost"
+                for client in (llm, vlm if vlm is not None else llm))):
+            raise ValueError("Self-hosted MiniCPM requires explicit clients and Gate-Off")
         if config is not None and config not in CONFIGS:
             raise ValueError("config must be M1, M2, M3, or M4")
         if library is None:
@@ -246,9 +257,9 @@ class Agent:
             raise ValueError("Agent mode differs from the published experiment")
         if deadline_s is None:
             deadline_s = profile.deadline_s if profile else 180
-        if isinstance(deadline_s, bool) or not isinstance(deadline_s, (int, float)) or not 0 < deadline_s <= 600:
+        if isinstance(deadline_s, bool) or not isinstance(deadline_s, (int, float)) or not 0 < deadline_s <= (1200 if selfhost else 600):
             raise ValueError("deadline_s must be within (0, 600]")
-        if profile and deadline_s != profile.deadline_s:
+        if profile and not selfhost and deadline_s != profile.deadline_s:
             raise ValueError("Agent deadline differs from the published experiment")
         generation_model = inference_model or (profile.generation_model if profile else llm_model or "qwen3.7-flash")
         if profile and llm_model and llm_model != generation_model:

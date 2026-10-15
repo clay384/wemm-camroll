@@ -1,0 +1,57 @@
+{
+  "observed_at": "2026-10-15T03:25:04.716729+00:00",
+  "tag": "architecture/2026-10-15-v1",
+  "host100": {
+    "deployed_release": "/home/realmagic/camroll-wemm/releases/minicpm-q6-20261015-102743-a4c6c7",
+    "runtime": "/home/realmagic/camroll-wemm/runtime/minicpm47-q6-thinking-m4-off-20261015-102743-a4c6c7",
+    "report_rollback_release": "/home/realmagic/camroll-wemm/releases/minicpm-v2-20261014-161912-06c689",
+    "report_rollback_runtime": "/home/realmagic/camroll-wemm/runtime/minicpm47-sdk-defaults-m4-off-20261014-161142-v2-93f384",
+    "private_recovery": "/home/realmagic/camroll-wemm/backups/release-20261015-v1",
+    "source_verification": {
+      "release_files": 430,
+      "release_mismatches": [],
+      "wemm_differences": []
+    },
+    "private_recovery_archive_sha256": "a214cd7ec4e08218a007b719bd05f1a356f923d76d2bccb22212ba1a852397b6",
+    "private_recovery_archive_bytes": 2011157
+  },
+  "private_dependencies": {
+    "snapshot_id": "bcc1cd1176ab39697c789a4f44c7426e",
+    "album_root": "/home/realmagic/camroll-wemm/runtime/photobench-qwen-20260930/albums/eval-w38max-formal-20260930-122300-813923",
+    "snapshot_files": {
+      "records.json": "bcc1cd1176ab39697c789a4f44c7426e20dd7cd4392c9b5e4cc1b88b515e8c66",
+      "vectors.npz": "07381f880d716a2775a2247aba8019591c6a41ea76acc44ca96d8d3356d90ab9",
+      "search.sqlite": "b39f65999fb25c4b56a8d846cbe2d3e1ad1cc3dcb2f38cc184494cdce06451c8"
+    },
+    "history_run": "f37-off-gate-20261006-181014-8bd9a5",
+    "history_sha256": "8ee4497f779148783241dc0c2add0574d727e8a368e96687b6aca0bdbcc91d37",
+    "budget": "/home/realmagic/camroll-wemm/runtime/budget.sqlite",
+    "budget_rule": "Always retain latest ledger; never restore evidence backup",
+    "completion_audit_sha256": "c0e680cfb71f612e248676aab1c733fad4e00ed0a8c371c663d9409f65a7fbd7"
+  },
+  "validation": {
+    "prior_full_offline_mac": {
+      "passed": 1162,
+      "skipped": 1
+    },
+    "prior_full_offline_linux": {
+      "passed": 1162,
+      "skipped": 1
+    },
+    "q6_acceptance": {
+      "passed": 25,
+      "failed": 5,
+      "planned": 30
+    },
+    "end_to_end_3": "not_started",
+    "formal_100": "not_started",
+    "publication_offline_mac": {
+      "passed": 1167,
+      "skipped": 1,
+      "warning": 1,
+      "seconds": 32.58
+    },
+    "restore_drill": "Offline materialization and forward/reverse patch hashes passed; no production restarts"
+  },
+  "scope": "Source recovery; private data, credentials, model weights and original upstream Sentrix checkout remain external prerequisites. No live deployment or service restart in this publication."
+}

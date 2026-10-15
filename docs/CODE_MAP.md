@@ -1,5 +1,7 @@
 # CamRoll–WeMM 源码阅读地图
 
+2026-10-15新增入口：`camroll_agent/modelbest.py`（云端），`camroll_agent/minicpm_selfhost.py`（自建Q6），`camroll_eval/minicpm_experiment.py`（独立协议与绑定），`deployment/minicpm_{config,probe,acceptance,selfhost_deployment,suite,report}.py`（配置、验收、部署核验、条件评测及只读报告）。`.153`源码前后快照位于`integrations/host153/20261015`，离线恢复入口为`deployment/materialize_host153.py`。对应[新版本说明](releases/2026-10-15-architecture-v1.md)。
+
 2026-10-07。本文所有链接均相对仓库定位；总体数据流与当前实验状态见 [ARCHITECTURE_CURRENT.md](ARCHITECTURE_CURRENT.md)。仓库之外的权重、媒体、QA、数据库及逐题记录不是缺失源码。
 
 ## 推荐阅读顺序

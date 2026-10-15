@@ -1,0 +1,158 @@
+{
+  "host": "192.168.0.153",
+  "root": "/home/asus/Github/Sentrix-Home-Web",
+  "base_commit": "93a07899515b88599a49098e030341fe3d11ebbe",
+  "files": [
+    {
+      "path": "backend/agent_runtime/runtime.py",
+      "current_sha256": "5945ead1013ec957c5101d5ed1209ec90b2c0de668cb6656140319ed513bd0f0",
+      "size": 210856,
+      "base_sha256": "63bf227f70e546aa4766fae035383e69152799756d0586c8e540b611eabe754d",
+      "mode": "664"
+    },
+    {
+      "path": "backend/app.py",
+      "current_sha256": "852afc57eff047f8c93af7fed50fd1d8ada81d586d83575f4eb6db055edf1ae2",
+      "size": 183812,
+      "base_sha256": "19433fce70a54463328e4577f63239691f5f316004f81d1e2a9c808b98054c4b",
+      "mode": "664"
+    },
+    {
+      "path": "backend/db.py",
+      "current_sha256": "b8dfcc9c4c08d73f06cc714eae93cda671832f7c0efca9083df0215e9ffe6960",
+      "size": 372877,
+      "base_sha256": "aef4612da38ed5815a9a894456a82ad9d9ebd53320ba8b7284c0f26c68201aab",
+      "mode": "644"
+    },
+    {
+      "path": "backend/embeddings/router.py",
+      "current_sha256": "10bf0c58e8f6d01d50b9118ce862c438df9a67923ad29d6701fca1cddd1ebd9a",
+      "size": 6196,
+      "base_sha256": "2a7be91c12b95e5629f5797f972801b30b7f5fb4743ec2ff96ab83d61969cfde",
+      "mode": "644"
+    },
+    {
+      "path": "backend/embeddings/scheme.py",
+      "current_sha256": "178a3d353f4f4c19ede4118af82ad7308ccef8e69bf45395380c456516402127",
+      "size": 3634,
+      "base_sha256": "c6693c9b1fcd8fad73105a1bea181a6cdcc442337c4a9d3403d2c1de685eede8",
+      "mode": "644"
+    },
+    {
+      "path": "backend/model_clients.py",
+      "current_sha256": "53b89f3225e961a0691cf2e06b9a64479fd1af613bdb1cedaffd052f176e2376",
+      "size": 96404,
+      "base_sha256": "784da94c177f356e4c764d5d5fdfcdf776b3ea610f0df1bc814d7ea8f2d6fc34",
+      "mode": "664"
+    },
+    {
+      "path": "backend/pipeline.py",
+      "current_sha256": "84d4b4ed8b0296bad10feac98572976f8816779cabd9a1a589b4d287a5e0ae42",
+      "size": 48253,
+      "base_sha256": "8caa877b2834d4b2de8660ac5caab96ec1310c8be7b2a7fec55f55bf53784d19",
+      "mode": "664"
+    },
+    {
+      "path": "backend/tests/test_photobench_protocol_contract.py",
+      "current_sha256": "c75fbca134466a81ecd63e2b0a0e4dfe92dcc32ad1c3b11517eb51633d52fec0",
+      "size": 3372,
+      "base_sha256": "a3805f798575237e1a3dbe5ca64201c54a4335d0f786a83ccc87178cefddf3ed",
+      "mode": "644"
+    },
+    {
+      "path": "services/photobench/backend/benchmark_orchestrator.py",
+      "current_sha256": "1402bf198add34023d8369cfb7c4aee461e71bcc21b9384d76ca50b19cd1641b",
+      "size": 461137,
+      "base_sha256": "7db4e53225b0215bce606046f111179afd096937ed84063c42f01abd9e188fbd",
+      "mode": "664"
+    },
+    {
+      "path": "services/photobench/backend/test_photo_import.py",
+      "current_sha256": "eda9db044d4ee1dd0a6ea3e7680f5302c48b2e853e35975245b42c3085573fee",
+      "size": 10696,
+      "base_sha256": "98de6a6945be3ac21020dd1926090a1dd148a02299be703434e5d51f1e62d4fb",
+      "mode": "644"
+    },
+    {
+      "path": "services/photobench/scripts/start.sh",
+      "current_sha256": "88218c1cd41e03a405249b68e26e1016e8a5f62726a9da6918bed72c38b57c76",
+      "size": 3801,
+      "base_sha256": "e769a147f4eb6c37f6a1eff6cc2243f0c8e7ea09b97dcb41c3ff8b6fabe1b6ed",
+      "mode": "775"
+    },
+    {
+      "path": "services/photobench/tests/test_suite_control.py",
+      "current_sha256": "58027650a646c0d7962d8ab9f39b44be8a9e3b752d26efe48f09a6893834f6d1",
+      "size": 16306,
+      "base_sha256": "e8de0152e6331fa3ce7f5202c69e6003f61503365ab9c37114456bbd89334141",
+      "mode": "664"
+    },
+    {
+      "path": "backend/embeddings/consistency.py",
+      "current_sha256": "1ca16b6fb3ab5b229faaf493bd2f58a737751ada93eb1fa9ae2cfac385f73903",
+      "size": 6305,
+      "base_sha256": null,
+      "mode": "644"
+    },
+    {
+      "path": "backend/embeddings/wemm_sidecar.py",
+      "current_sha256": "575b67d9a3b3fc8bcb6b7c8924c466c7e6eb77b49a1e9f38dde26985b3057d9c",
+      "size": 13382,
+      "base_sha256": null,
+      "mode": "644"
+    },
+    {
+      "path": "backend/tests/test_deferred_import.py",
+      "current_sha256": "729a219e327ae4ed15a63cb71cda65dff73e45df4414970092639756384398c6",
+      "size": 1285,
+      "base_sha256": null,
+      "mode": "644"
+    },
+    {
+      "path": "scripts/deploy/restart_wemm_sidecar.sh",
+      "current_sha256": "4bba1c77a91c0c026f27ad2838a2d7788dabe634b020b44b9d6193fe1e112972",
+      "size": 2119,
+      "base_sha256": null,
+      "mode": "755"
+    },
+    {
+      "path": "scripts/deploy/restart_wemm_vllm.sh",
+      "current_sha256": "addc34a07ac9c9a63e24e0a682388c247e8e8be3fc7f73d03cfce7a09077458e",
+      "size": 2009,
+      "base_sha256": null,
+      "mode": "755"
+    },
+    {
+      "path": "scripts/maintenance/wemm_embedder_sidecar.py",
+      "current_sha256": "804c65c98a8e97c4b0ecbe045d2c4607aac30659d886445ac05970cb3f13508b",
+      "size": 9123,
+      "base_sha256": null,
+      "mode": "644"
+    },
+    {
+      "path": "scripts/maintenance/rebuild_scope_text_vectors.py",
+      "current_sha256": "6478f3a8bd65ed08ae60b07272b940158086fba60356f90fdba892dab90ad2e3",
+      "size": 10585,
+      "base_sha256": null,
+      "mode": "644"
+    },
+    {
+      "path": "scripts/maintenance/rebuild_scope_vectors.py",
+      "current_sha256": "398643afe23955f9b84e0c408f949cee34206d98a015607ff1b5221e0de5423c",
+      "size": 6470,
+      "base_sha256": null,
+      "mode": "644"
+    },
+    {
+      "path": "scripts/maintenance/verify_rebuild.py",
+      "current_sha256": "7df3b523437fe4a867d3a8d37ca35c385c7a1eb8cb62618f11a48bffe64106d6",
+      "size": 2230,
+      "base_sha256": null,
+      "mode": "644"
+    }
+  ],
+  "observed_at": "2026-10-15T03:23:20.375124+00:00",
+  "scope": "12 tracked modified files and 9 directly related WeMM/import source additions; unrelated probes, data and configuration excluded",
+  "upstream": "https://github.com/ysh12304124/sentrix-home-web",
+  "restore_requires": "Original upstream checkout at base_commit, its dependencies and private data/configuration. These are source overlays, not a full Sentrix distribution."
+}

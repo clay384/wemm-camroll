@@ -1,5 +1,9 @@
 # CamRoll–WeMM 当前完整架构
 
+> 2026-10-15增补：当前采用方案仍为WeMM＋Qwen3.7 Flash＋M4＋Gate-Off。新MiniCPM云端／自建Q6是显式独立推理配置，不重建W38Max来源的相册。新增`modelbest.py`与`minicpm_selfhost.py`分别接入云API和经SSH回环访问的llama.cpp；Agent决策、看图及M4共用同一选定客户端，Thinking字段仅存journal。JSON传输适配不削弱本地schema、ID与资产校验，未知请求包括零价调用仍阻断。Q6为600秒请求／1200秒轮次、262144上下文／8192输出；原Qwen冻结配置保持不变。`minicpm_experiment.py`、`minicpm_acceptance.py`、`minicpm_suite.py`提供固定验收、条件运行及历史来源核验，`minicpm_report.py`作为当前8774只读入口。Q6验收25/30，3题与100题未启动。详见[本版说明](releases/2026-10-15-architecture-v1.md)和[恢复流程](RESTORE_20261015.md)。
+
+> `.153`的Sentrix/PhotoBench改动单独存于`integrations/host153/20261015`，只作源码快照；不能当作`.100`相册服务的替代实现。以下10月7日架构正文保留其历史参数与入口，不代表最新实验已完成。
+
 > 2026-10-14更新：当前采用Gate-Off，详见[完整接手文档](PROJECT_HANDOFF_20261014.md)。以下为10月7日架构/实验记录；可选Gate实现继续保留，历史结果不改写，GPU与服务现状以新交接的带日期观测为准。
 
 文档日期：2026-10-07（Asia/Shanghai）。本文按仓库源码整理，描述建库、查询、模型、Gate、评测、部署与恢复的完整连接关系。阅读文件定位见 [CODE_MAP.md](CODE_MAP.md)。源码版本以本文件所属 Git 提交为准；下文运行状态是已有验收记录的时间点，不能代替实时健康检查。

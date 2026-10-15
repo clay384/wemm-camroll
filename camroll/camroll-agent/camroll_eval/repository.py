@@ -10,6 +10,18 @@ import threading
 from .common import read_json, atomic_json, safe_id, sha256, now_iso, object_hash
 from .metrics import summary
 
+MINICPM_PROTOCOL = 'minicpm47-thinking-m4-off-v1'
+MINICPM_SDK_PROTOCOL = 'minicpm47-sdk-defaults-m4-off-v1'
+MINICPM_INTERFACE_PROTOCOL = 'minicpm47-sdk-defaults-m4-off-v2'
+MINICPM_SDK_PROTOCOLS = frozenset({MINICPM_SDK_PROTOCOL, MINICPM_INTERFACE_PROTOCOL})
+MINICPM_SELFHOST_PROTOCOL = 'minicpm47-q6-thinking-m4-off-v1'
+MINICPM_PROTOCOLS = frozenset({MINICPM_PROTOCOL, MINICPM_SELFHOST_PROTOCOL, *MINICPM_SDK_PROTOCOLS})
+MINICPM_COMPARISON = 'pinned-index-minicpm-historical-f37-v1'
+MINICPM_MANIFEST = 'minicpm47-historical-comparison-v1'
+MINICPM_HISTORY_ID = 'f37-off-gate-20261006-181014-8bd9a5'
+MINICPM_HISTORY_SHA256 = '8ee4497f779148783241dc0c2add0574d727e8a368e96687b6aca0bdbcc91d37'
+TERMINAL_STATUSES = {'completed', 'completed_with_errors', 'blocked', 'failed', 'interrupted', 'cancelled'}
+
 
 class ComparisonScopeError(ValueError):
     """Existing runs cannot be compared within the requested report scope."""
@@ -64,8 +76,11 @@ class Repository:
                 if (state.get("supplement_summary_version") != "http403-supplement-v1"
                         or not isinstance(state.get("summary"), dict)):
                     raise ValueError("supplement requires a versioned subset summary")
-            elif state.get("mode") == "gate_ab":
-                if (state.get("gate_summary_version") != "camroll-flash-gate-v1"
+            elif state.get("mode") in {"gate_ab", "minicpm_compare"}:
+                expected = state.get('protocol_label') if state['mode'] == 'minicpm_compare' else 'camroll-flash-gate-v1'
+                if state['mode'] == 'minicpm_compare' and expected not in MINICPM_PROTOCOLS:
+                    raise ValueError('Unknown MiniCPM report protocol')
+                if (state.get("gate_summary_version") != expected
                         or not isinstance(state.get("summary"), dict)):
                     raise ValueError("gate report requires a versioned fixed-denominator summary")
             else:
@@ -87,12 +102,13 @@ class Repository:
                 'supplement_summary_version', 'supplement_complete', 'build_skipped',
                 'query_cache_policy', 'source_unchanged', 'pinned_snapshot_unchanged',
                 'wall_ms', 'stop_reason', 'inference_config', 'index_binding', 'gate_summary_version',
-                'gate_complete', 'gate_policy', 'gate_summary', 'seen_benchmark', 'suite_id')
+                'gate_complete', 'gate_policy', 'gate_summary', 'seen_benchmark', 'suite_id',
+                'inference_complete', 'comparison_scope')
         return {key: state.get(key) for key in keys if key in state} | Repository._report_fields(state)
 
     @staticmethod
     def _report_fields(state):
-        if state.get('mode') != 'gate_ab':
+        if state.get('mode') not in {'gate_ab', 'minicpm_compare'}:
             return {}
         # Gate's frozen summary.completed includes judgment completeness.
         # Project execution separately, without changing the stored summary
@@ -158,7 +174,7 @@ class Repository:
         """
         value = self._item_cached(run_id, qa_id)
         state = self._load_cached(run_id)
-        if state.get('mode') != 'gate_ab':
+        if state.get('mode') not in {'gate_ab', 'minicpm_compare'}:
             return value
         plan = next((row for row in state.get('qa_plan', []) if row.get('qa_id') == qa_id), {})
         turn_count = plan.get('planned_turn_count')
@@ -315,8 +331,15 @@ class Repository:
 
     def _remaining_comparison_scope(self, states):
         """One terminal, hash-bound four-run comparison; never rewrite suite IDs."""
-        path = self.root / 'remaining-comparison.json'
-        if not path.is_file() or path.is_symlink() or path.resolve().parent != self.root or len(self.roots) < 2:
+        for index, root in enumerate(self.roots[:-1]):
+            result = self._remaining_comparison_scope_at(states, root, self.roots[index + 1])
+            if result is not None:
+                return result
+        return None
+
+    def _remaining_comparison_scope_at(self, states, current_root, parent_root):
+        path = current_root / 'remaining-comparison.json'
+        if not path.is_file() or path.is_symlink() or path.resolve().parent != current_root:
             return None
         try:
             scope = read_json(path)
@@ -338,7 +361,7 @@ class Repository:
             for index, row in enumerate(entries):
                 run_id = safe_id(row['run_id'])
                 source = self.path(run_id)
-                owning_root = self.roots[1] if index < 3 else self.root
+                owning_root = parent_root if index < 3 else current_root
                 expected_suite = scope['source_suite_id'] if index < 3 else scope['suite_id']
                 if (source.parent.parent.parent != owning_root or source.resolve() != source.absolute()
                         or row.get('source') != ('history' if index < 3 else 'current')
@@ -359,6 +382,87 @@ class Repository:
         except (ValueError, KeyError, TypeError, OSError):
             return None
 
+    def _minicpm_comparison_scope(self, states, *, manifest=None):
+        """Permit exactly the pinned original F37-Off and one new terminal run.
+
+        All paths come from configured repository roots; no manifest path is
+        followed. Hash both files at each request before trusting cached data.
+        """
+        path = self.root / 'minicpm-comparison.json'
+        try:
+            if len(states) != 2:
+                return None
+            if manifest is None:
+                if not path.is_file() or path.is_symlink() or path.resolve().parent != self.root:
+                    return None
+                manifest = read_json(path)
+            scope = manifest
+            entries = scope['runs']
+            if (scope.get('schema_version') != MINICPM_MANIFEST
+                    or scope.get('protocol') not in MINICPM_PROTOCOLS
+                    or scope.get('comparison_scope') != MINICPM_COMPARISON
+                    or len(entries) != 2
+                    or [row.get('source') for row in entries] != ['current', 'history']
+                    or len({row['run_id'] for row in entries}) != 2
+                    or {state['run_id'] for state in states} != {row['run_id'] for row in entries}
+                    or entries[1]['run_id'] != MINICPM_HISTORY_ID
+                    or entries[1].get('run_sha256') != MINICPM_HISTORY_SHA256):
+                return None
+            verified = []
+            for index, entry in enumerate(entries):
+                source = self.path(safe_id(entry['run_id']))
+                owner = source.parent.parent.parent
+                if source.resolve() != source.absolute() or (index == 0 and owner != self.root):
+                    return None
+                if index == 1 and (owner not in self.roots[1:] or owner.parent.name != 'photobench-flash-gate-20261006f'):
+                    return None
+                if sha256(source) != entry.get('run_sha256'):
+                    return None
+                state = self._load_cached(entry['run_id'])
+                protocol = scope['protocol'] if index == 0 else 'camroll-flash-gate-v1'
+                if (state.get('mode') != ('minicpm_compare' if index == 0 else 'gate_ab')
+                        or state.get('protocol_label') != protocol
+                        or state.get('formal_protocol') is not True
+                        or state.get('status') not in TERMINAL_STATUSES
+                        or state.get('qa_count') != 100 or state.get('planned_turn_count') != 111
+                        or state.get('planned_eligible_qa_count') != 81
+                        or state.get('summary', {}).get('retrieval_metric_count') != 81
+                        or state.get('index_binding') != scope.get('index_binding')
+                        or not state.get('index_binding')
+                        or state.get('input_integrity') != scope.get('input_integrity')
+                        or any(not state.get('input_integrity', {}).get(key) for key in ('qa_sha256', 'dataset_sha256'))
+                        or len(state.get('qa_plan') or []) != 100
+                        or len({row['qa_id'] for row in state['qa_plan']}) != 100
+                        or sum(row['planned_turn_count'] for row in state['qa_plan']) != 111
+                        or object_hash(state['qa_plan']) != scope.get('qa_plan_sha256')
+                        or not state.get('judge_protocol')
+                        or object_hash(state['judge_protocol']) != scope.get('judge_protocol_sha256')):
+                    return None
+                cfg = state.get('inference_config') or {}
+                if cfg.get('gate_policy') != 'off':
+                    return None
+                if index == 0:
+                    if cfg.get('generation_model') != ('minicpm-v4.7-35b-a3b-q6-thinking' if protocol == MINICPM_SELFHOST_PROTOCOL else 'MiniCPM-V-4.7-35B-A3B'):
+                        return None
+                    if protocol == MINICPM_PROTOCOL:
+                        if (cfg.get('enable_thinking') is not True or cfg.get('stream') is not False
+                                or cfg.get('max_output_tokens') != 8192):
+                            return None
+                    else:
+                        from .minicpm_experiment import inference_config
+                        profile = inference_config(cfg)
+                        if profile.protocol_version != protocol or profile.request_profile != ('selfhost-q6-v1' if protocol == MINICPM_SELFHOST_PROTOCOL else 'sdk-defaults-v1'):
+                            return None
+                if index == 1 and (cfg.get('group') != 'F37-Off' or cfg.get('generation_model') != 'qwen3.7-flash'):
+                    return None
+                verified.append(entry['run_id'])
+            return {'source_hashes_verified': True, 'historical_run_id': MINICPM_HISTORY_ID,
+                    'historical_run_sha256': MINICPM_HISTORY_SHA256, 'run_ids': verified,
+                    'protocol': scope['protocol'], 'contemporary': False,
+                    'quality_denominator': 100, 'retrieval_denominator': 81}
+        except (ValueError, KeyError, TypeError, OSError):
+            return None
+
     def compare(self, run_ids):
         states = [self._load_cached(run_id) for run_id in run_ids]
         if not states:
@@ -367,7 +471,14 @@ class Repository:
             raise ValueError("supplement subsets are reported separately from formal comparisons")
         if any(state.get("formal_protocol") is False for state in states):
             raise ValueError("smoke runs are excluded from formal comparisons")
-        gate_comparison = any(state.get('mode') == 'gate_ab' for state in states)
+        minicpm_comparison = any(state.get('mode') == 'minicpm_compare' for state in states)
+        minicpm_scope = None
+        if minicpm_comparison:
+            minicpm_scope = self._minicpm_comparison_scope(states)
+            if minicpm_scope is None:
+                raise ComparisonScopeError('MiniCPM 仅允许终态且来源哈希通过的新正式组与指定原 F37-Off 对照；'
+                                           '其他历史协议、验收样本和运行中记录请单独查看。')
+        gate_comparison = not minicpm_comparison and any(state.get('mode') == 'gate_ab' for state in states)
         remaining_scope = None
         if gate_comparison:
             if not all(state.get('mode') == 'gate_ab' and state.get('protocol_label') == 'camroll-flash-gate-v1'
@@ -405,5 +516,8 @@ class Repository:
                 "same_qa_hash": len(qa_hashes) == 1 and None not in qa_hashes,
                 "same_dataset_hash": len(dataset_hashes) == 1 and None not in dataset_hashes,
                 "remaining_scope": remaining_scope,
-                "comparison_scope": "frozen_index_flash_gate_comparison" if gate_comparison else "contemporary_full_system_comparison" if contemporary else "historical_system_comparison",
-                "warning": ("本次仅独立执行剩余F38-On；前三组只读引用此前封存的结果，F38-Off仍已阻断，四组比较尚未完整。" if remaining_scope else "") + ("冻结 WeMM 索引上的 Flash × Gate 对照。Doubao同时担任事实Gate和独立最终评分，存在模型关联。album3为已见基准，不代表独立泛化能力。" if gate_comparison else "同期 M4 完整系统比较；不能单独归因于 embedding 或 reranker。" if contemporary else "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。")})
+                "minicpm_scope": minicpm_scope,
+                "comparison_scope": MINICPM_COMPARISON if minicpm_comparison else "frozen_index_flash_gate_comparison" if gate_comparison else "contemporary_full_system_comparison" if contemporary else "historical_system_comparison",
+                "warning": (("非同期历史对照：仅新 MiniCPM 与哈希锁定的原 F37-Off，共用 QA、计划、数据、冻结索引和 Judge 协议。" +
+                    ("MiniCPM 的 Thinking、温度、输出上限和 stream 请求参数均未指定，使用供应商默认；实际上限未知，不标为 Thinking On 或 Off。" if minicpm_scope['protocol'] in MINICPM_SDK_PROTOCOLS else "MiniCPM 开启 thinking、输出上限8192、非流式。") +
+                    "实际工具和 JSON 模式以冻结配置为准；context_limit 单轮失败后继续，历史停止规则不改。固定100题质量与81题交付指标；非流式 TTFT 未观测，不作同条件速度或单一模型因果结论。") if minicpm_comparison else ("本次仅独立执行剩余F38-On；前三组只读引用此前封存的结果，F38-Off仍已阻断，四组比较尚未完整。" if remaining_scope else "") + ("冻结 WeMM 索引上的 Flash × Gate 对照。Doubao同时担任事实Gate和独立最终评分，存在模型关联。album3为已见基准，不代表独立泛化能力。" if gate_comparison else "同期 M4 完整系统比较；不能单独归因于 embedding 或 reranker。" if contemporary else "历史运行时间、硬件和冷暖状态不同；质量与指标口径对齐，不代表同硬件速度排名。"))})

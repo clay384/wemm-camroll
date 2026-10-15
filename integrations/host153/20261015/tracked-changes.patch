@@ -1,0 +1,1494 @@
+diff --git a/backend/agent_runtime/runtime.py b/backend/agent_runtime/runtime.py
+index 1e56a59a..73658b65 100644
+--- a/backend/agent_runtime/runtime.py
++++ b/backend/agent_runtime/runtime.py
+@@ -1560,7 +1560,8 @@ class AgentRuntime:
+ 
+     def __init__(self, *, chat_fn, profile_name: str | None = None,
+                  scope_id="home-default", viewer_id="owner", conversation_id=None,
+-                 ocr_settings: dict | None = None, include_debug: bool = False):
++                 ocr_settings: dict | None = None, include_debug: bool = False,
++                 use_final_writer: bool = False):
+         self.chat_fn = chat_fn
+         self.profile = get_profile(profile_name)
+         self.scope_id = scope_id
+@@ -1568,6 +1569,7 @@ class AgentRuntime:
+         self.conversation_id = conversation_id
+         self.ocr_settings = ocr_settings or {}
+         self.include_debug = include_debug
++        self.use_final_writer = use_final_writer
+ 
+     def _tool_descriptions(self) -> str:
+         lines = []
+@@ -2183,14 +2185,24 @@ class AgentRuntime:
+         answer_context = None
+         answer_writer_pending = False
+         answer_writer_messages = None
++        writer_fallback_answer = ""
++        final_writer_attempted = False
+         while True:
+             if cancelled():
+                 return stop_turn()
+             if answer_writer_pending and answer_writer_messages:
+-                if not turn.budget.can_model_step():
++                writer_has_budget = (turn.budget.has_final_reserve()
++                                     if self.use_final_writer
++                                     else turn.budget.can_model_step())
++                if not writer_has_budget:
+                     answer_writer_pending = False
+                 else:
+-                    turn.budget.record_model_step()
++                    # The NInfer final writer is a dedicated delivery stage,
++                    # not another tool-loop decision step. Keep the Agent's
++                    # 8-step completion metric intact while still enforcing
++                    # the wall-clock final reserve.
++                    if not self.use_final_writer:
++                        turn.budget.record_model_step()
+                     try:
+                         writer_call_id = f"writer_{sum(1 for step in turn.steps if step.get('type') == 'writer') + 1}"
+                         turn.writer_call_id = writer_call_id
+@@ -2314,7 +2326,38 @@ class AgentRuntime:
+                         turn.steps.append({"type": "writer", "status": "failed",
+                                            "call_type": "writer", "reason": str(exc)})
+                         answer_writer_pending = False
++                        if writer_fallback_answer:
++                            turn.final_answer = writer_fallback_answer
++                            turn.answer_source = "model"
++                            turn.status = "complete"
++                            turn.reason = "writer_failed_fallback"
++                            break
+             if not turn.budget.can_model_step():
++                if (self.use_final_writer and answer_context_enabled
++                        and not final_writer_attempted
++                        and task.tool_results
++                        and agent2_task_state is not None
++                        and agent2_evidence_ledger is not None
++                        and turn.budget.has_final_reserve()):
++                    try:
++                        from .final_writer import build_answer_writer_messages, naturalize_answer
++                        answer_context = agent2_evidence_ledger.build_answer_context(
++                            message, agent2_task_state)
++                        if answer_context.get("facts"):
++                            writer_fallback_answer = naturalize_answer(
++                                turn.final_answer or last_model_final_answer)
++                            answer_writer_messages = build_answer_writer_messages(
++                                message, answer_context)
++                            answer_writer_pending = True
++                            final_writer_attempted = True
++                            if turn.agent2_trace:
++                                turn.agent2_trace["answer_context"] = answer_context
++                                turn.agent2_trace["agent_final_candidate"] = writer_fallback_answer
++                                turn.agent2_trace["writer_trigger"] = "agent_step_budget_exhausted"
++                            continue
++                    except Exception as exc:
++                        if turn.agent2_trace:
++                            turn.agent2_trace["writer_prepare_error"] = str(exc)
+                 # Phase H H4：步骤耗尽但 OCR 已读到确定性硬值时，直接渲染交付（不依赖 12B 收尾）
+                 if task.tool_results and not self.profile.features.get("agent2_authoritative"):
+                     try:
+@@ -2676,6 +2719,30 @@ class AgentRuntime:
+                             "请先调用 inspect_photo（asset_handle 用 preview 里的 handle），得到观察后再输出 final。"
+                         )})
+                     continue
++                if (self.use_final_writer and answer_context_enabled
++                        and not final_writer_attempted
++                        and task.tool_results
++                        and agent2_task_state is not None
++                        and agent2_evidence_ledger is not None
++                        and turn.budget.has_final_reserve()):
++                    try:
++                        from .final_writer import build_answer_writer_messages, naturalize_answer
++                        answer_context = agent2_evidence_ledger.build_answer_context(
++                            message, agent2_task_state)
++                        if answer_context.get("facts"):
++                            writer_fallback_answer = naturalize_answer(
++                                str(action.get("answer") or ""))
++                            answer_writer_messages = build_answer_writer_messages(
++                                message, answer_context)
++                            answer_writer_pending = True
++                            final_writer_attempted = True
++                            if turn.agent2_trace:
++                                turn.agent2_trace["answer_context"] = answer_context
++                                turn.agent2_trace["agent_final_candidate"] = writer_fallback_answer
++                            continue
++                    except Exception as exc:
++                        if turn.agent2_trace:
++                            turn.agent2_trace["writer_prepare_error"] = str(exc)
+                 # Phase G G3：Completion Gate —— retrieve_evidence / deliver_media 等需求未完成时，
+                 # 只告诉模型“任务还没完成”，由模型自己决定下一步 Tool（不重建 Planner）。
+                 # 先保存模型产出的 final 文本：gate 后续模型调用失败时也不丢失已产出回答（D12）。
+diff --git a/backend/app.py b/backend/app.py
+index 782b3a85..0c8665a3 100644
+--- a/backend/app.py
++++ b/backend/app.py
+@@ -2701,6 +2701,7 @@ def _tool_loop_turn(message, conversation_id, scope_id, viewer_id, recent_turns=
+     profile_name = (profile_name or os.getenv("SENTRIX_AGENT_PROFILE", "goal_driven_candidate")).strip().lower()
+     model_call_metrics = []
+     gamma.get_and_clear_call_metrics()
++    is_ninfer_runtime = getattr(gamma, "api_mode", "") == "ninfer"
+ 
+     def _estimate_prompt_tokens(messages):
+         # 估算：中文约 0.7 token/字，ASCII 约 0.25 token/字符；加 300 结构开销。
+@@ -2722,7 +2723,7 @@ def _tool_loop_turn(message, conversation_id, scope_id, viewer_id, recent_turns=
+ 
+     def chat_fn(messages, *, call_type="agent", step_id=None):
+         is_cloud_model = getattr(gamma, "runtime_source", "") == "cloud_api"
+-        is_ninfer = getattr(gamma, "api_mode", "") == "ninfer"
++        is_ninfer = is_ninfer_runtime
+         if is_cloud_model:
+             max_tokens = max(1, int(os.getenv(
+                 "SENTRIX_BIG_MODEL_MAX_OUTPUT_TOKENS",
+@@ -2745,7 +2746,12 @@ def _tool_loop_turn(message, conversation_id, scope_id, viewer_id, recent_turns=
+         try:
+             reasoning_effort = None
+             if is_ninfer:
+-                reasoning_effort = "xhigh" if call_type == "writer" else "none"
++                reasoning_effort = (
++                    os.getenv("SENTRIX_NINFER_WRITER_REASONING_EFFORT", "xhigh")
++                    .strip().lower()
++                    if call_type == "writer"
++                    else "none"
++                )
+             text = gamma.chat_messages(
+                 messages, role="tool_loop", temperature=0.0, max_tokens=max_tokens,
+                 reasoning_effort=reasoning_effort)
+@@ -2762,7 +2768,8 @@ def _tool_loop_turn(message, conversation_id, scope_id, viewer_id, recent_turns=
+                            ocr_settings={"small_ocr_enabled": _ocr_setting},
+                            scope_id=scope_id, viewer_id=viewer_id,
+                            conversation_id=conversation_id,
+-                           include_debug=include_debug)
++                           include_debug=include_debug,
++                           use_final_writer=is_ninfer_runtime)
+     prev_state = _TOOL_LOOP_TASK_STATE.get(conversation_id) if conversation_id else None
+     # Phase C C15：用户点选的照片写入本轮 task_state（selected handle 稳定跨轮可用）
+     if selected_asset_handle:
+@@ -3628,6 +3635,17 @@ async def ingest(
+     return {"accepted": True, "assetId": created["id"], "fileName": safe_name, "status": created["status"], "mediaType": media_type, "scope_id": scope}
+ 
+ 
++def _schedule_remote_import_processing(background_tasks, queued_asset_ids, batch, defer_batch_complete):
++    """Start ingest only after a deferred multi-request upload is complete."""
++    if defer_batch_complete:
++        return
++    store.complete_ingest_batch(batch)
++    if queued_asset_ids:
++        background_tasks.add_task(process_ingest_batch, queued_asset_ids, batch)
++    else:
++        background_tasks.add_task(pipeline.finalize_ingest_batch, batch)
++
++
+ @app.post("/api/import", status_code=202)
+ def import_remote_files(
+     background_tasks: BackgroundTasks,
+@@ -3736,13 +3754,13 @@ def import_remote_files(
+                 item["destination"].unlink(missing_ok=True)
+                 items.append({"accepted": False, "fileName": item["file_name"], "status": "failed", "error": str(error)})
+ 
+-    if queued_asset_ids:
+-        if not deferBatchComplete:
+-            store.complete_ingest_batch(batch)
+-        background_tasks.add_task(process_ingest_batch, queued_asset_ids, batch)
+-    else:
+-        store.complete_ingest_batch(batch)
+-        background_tasks.add_task(pipeline.finalize_ingest_batch, batch)
++    # A deferred batch is still being uploaded. Starting the pipeline here lets
++    # its background SQLite writer race the next upload chunk and can make an
++    # otherwise healthy chunk fail with ``database is locked``. The explicit
++    # /complete endpoint owns starting the worker once all chunks are durable.
++    _schedule_remote_import_processing(
++        background_tasks, queued_asset_ids, batch, deferBatchComplete
++    )
+     return {"accepted": any(item["accepted"] for item in items), "batch_id": batch, "scope_id": scope, "items": items, "accepted_count": sum(item["accepted"] for item in items), "rejected_count": sum(not item["accepted"] for item in items)}
+ 
+ 
+diff --git a/backend/db.py b/backend/db.py
+index cfda6910..04396ad9 100644
+--- a/backend/db.py
++++ b/backend/db.py
+@@ -304,6 +304,103 @@ def gps_distance_km(first, second):
+     return 6371.0088 * 2 * math.asin(math.sqrt(a))
+ 
+ 
++class _LockedCursor:
++    """Cursor proxy that keeps every sqlite3 call under the store lock.
++
++    Fetching also advances shared connection state, so ``fetch*`` / iteration
++    must be serialized exactly like ``execute`` itself.
++    """
++
++    __slots__ = ("_cursor", "_lock")
++
++    def __init__(self, cursor, lock):
++        object.__setattr__(self, "_cursor", cursor)
++        object.__setattr__(self, "_lock", lock)
++
++    def fetchone(self):
++        with self._lock:
++            return self._cursor.fetchone()
++
++    def fetchmany(self, size=None):
++        with self._lock:
++            if size is None:
++                return self._cursor.fetchmany()
++            return self._cursor.fetchmany(size)
++
++    def fetchall(self):
++        with self._lock:
++            return self._cursor.fetchall()
++
++    def close(self):
++        with self._lock:
++            return self._cursor.close()
++
++    def __iter__(self):
++        return self
++
++    def __next__(self):
++        with self._lock:
++            return next(self._cursor)
++
++    def __getattr__(self, name):
++        return getattr(self._cursor, name)
++
++
++class _LockedConnection:
++    """Serialize access to a sqlite3 connection shared across threads.
++
++    ``check_same_thread=False`` only disables sqlite3's thread-affinity check;
++    it does not make a connection thread-safe.  CPython's ``_sqlite3`` keeps an
++    internal prepared-statement cache keyed by ``(sql,)`` and a per-connection
++    error slot, both mutated without a lock.  Concurrent ``execute()`` calls on
++    one shared connection therefore raise spurious ``KeyError((sql,))`` or
++    ``DatabaseError('not an error')``, and can leave a half-stepped statement
++    behind ("another row available", "cannot start a transaction within a
++    transaction").  Every operation is routed through the store lock instead.
++    """
++
++    __slots__ = ("_conn", "_lock")
++
++    def __init__(self, connection, lock):
++        object.__setattr__(self, "_conn", connection)
++        object.__setattr__(self, "_lock", lock)
++
++    # Attribute passthrough: row_factory / isolation_level / text_factory ...
++    def __getattr__(self, name):
++        return getattr(self._conn, name)
++
++    def __setattr__(self, name, value):
++        setattr(self._conn, name, value)
++
++    def execute(self, *args, **kwargs):
++        with self._lock:
++            return _LockedCursor(self._conn.execute(*args, **kwargs), self._lock)
++
++    def executemany(self, *args, **kwargs):
++        with self._lock:
++            return _LockedCursor(self._conn.executemany(*args, **kwargs), self._lock)
++
++    def executescript(self, *args, **kwargs):
++        with self._lock:
++            return _LockedCursor(self._conn.executescript(*args, **kwargs), self._lock)
++
++    def cursor(self, *args, **kwargs):
++        with self._lock:
++            return _LockedCursor(self._conn.cursor(*args, **kwargs), self._lock)
++
++    def commit(self):
++        with self._lock:
++            return self._conn.commit()
++
++    def rollback(self):
++        with self._lock:
++            return self._conn.rollback()
++
++    def close(self):
++        with self._lock:
++            return self._conn.close()
++
++
+ class MemoryStore:
+     _schema_locks = {}
+     _schema_locks_guard = threading.Lock()
+@@ -316,11 +413,15 @@ class MemoryStore:
+     def __init__(self, path):
+         self.path = str(path)
+         self._last_vector_search = {"backend": "sqlite", "error": None}
+-        # FastAPI dispatches sync handlers through a thread pool. sqlite3's
+-        # Row metadata can be corrupted when one shared connection executes
+-        # overlapping cursors, even with check_same_thread disabled.
++        # FastAPI dispatches sync handlers through a thread pool, so a single
++        # sqlite3 connection is shared by many threads at once.  check_same_thread
++        # only disables sqlite3's thread-affinity check; it does not make the
++        # connection thread-safe (see _LockedConnection for the failure modes).
++        # Every statement, cursor read and commit is serialized by this lock.
+         self._connection_lock = threading.RLock()
+-        self.connection = sqlite3.connect(path, timeout=30, check_same_thread=False)
++        self.connection = _LockedConnection(
++            sqlite3.connect(path, timeout=30, check_same_thread=False),
++            self._connection_lock)
+         self.connection.row_factory = sqlite3.Row
+         self.connection.execute("PRAGMA foreign_keys = ON")
+         with self._schema_lock(path):
+@@ -1760,6 +1861,12 @@ class MemoryStore:
+             ("DELETE FROM person_event_memory WHERE person_id IN " + S.format(tbl="entities"), (scope_id,)),
+             ("DELETE FROM person_event_memory WHERE event_id IN " + S.format(tbl="events"), (scope_id,)),
+             ("DELETE FROM person_patterns WHERE person_id IN " + S.format(tbl="entities"), (scope_id,)),
++            # agent_core_memory_items 没有 scope_id，只能靠 card_id 定位。
++            # 不能用 S.format() —— 它拼的是 "SELECT id FROM ..."，而
++            # agent_core_memory_cards 的主键叫 card_id，会报 no such column: id。
++            # 必须排在 agent_core_memory_cards 之前删（实测 album2 卡在这 30 行）。
++            ("DELETE FROM agent_core_memory_items WHERE card_id IN "
++             "(SELECT card_id FROM agent_core_memory_cards WHERE scope_id = ?)", (scope_id,)),
+             # observations reference assets — clean any observations in OTHER scopes that reference our assets
+             ("DELETE FROM observations WHERE asset_id IN " + S.format(tbl="assets"), (scope_id,)),
+         ]
+@@ -1784,6 +1891,18 @@ class MemoryStore:
+             "agent_user_assertions", "agent_impressions",
+             "agent_proactivity_preferences", "agent_scene_cooldowns",
+             "agent_claim_conflicts", "agent_core_memory_cards",
++            # family_* / person_* 图谱表：都带 scope_id，按 scope 删即可。
++            # 原列表漏了它们 —— 删 entities / memory_spaces 时会被外键挡住并
++            # 让整个事务回滚（实测这三张表就是元凶）。
++            # person_moments 引用 person_insight_runs，必须排在它前面。
++            "person_moments",
++            "person_insight_runs",
++            "family_person_memberships",
++            "family_person_portraits",
++            "family_relationship_blocks",
++            "family_relationships",
++            "family_analysis_runs",
++            "family_scope_groups",
+         ]
+         # Order-sensitive: observations → face_clusters → events → entities → trips → assets
+         scoped_tables_main = [
+diff --git a/backend/embeddings/router.py b/backend/embeddings/router.py
+index 3bbb3987..f86b9f0b 100644
+--- a/backend/embeddings/router.py
++++ b/backend/embeddings/router.py
+@@ -4,9 +4,9 @@ Owns the two independent embedder slots and exposes a single ``embed`` entry
+ point for the retrieval layer.  Construction happens at the Application
+ Composition Root (``app.py``); the Kernel and Agent only ever see this object.
+ 
+-Selection is env-driven:
+-  SENTRIX_IMAGE_EMBEDDER = clip | chinese_clip        (visual slot)
+-  SENTRIX_TEXT_EMBEDDER  = clip | bge                  (text slot)
++Selection comes from embeddings/scheme.py (one scheme for BOTH slots):
++  legacy = chinese_clip (visual) + bge (text)
++  wemm   = tencent/WeMM-Embedding-2B, one unified space for both slots
+ 
+ A slot whose embedder is unavailable reports ``available=False`` and the
+ corresponding ANN retriever skips with a trace reason — never a silent empty.
+@@ -23,6 +23,25 @@ class EmbeddingRouter:
+         self.visual = visual
+         self.text = text
+         self._timing_events = []
++        # 统一空间（两个槽指向同一个模型）时，同一个 query 只需编码一次。
++        # legacy 下两个槽是两个不同模型，各自编码是必须的；WeMM 下则是同一向量，
++        # 重复调用只是白白多付一次 sidecar 往返（实测单次 100ms 量级）。
++        self._query_cache: tuple[str, list[float]] | None = None
++
++    @property
++    def unified_space(self) -> bool:
++        """两个槽是否同一个模型——决定能否共用一次查询编码。"""
++        return bool(self.visual is not None and self.visual is self.text)
++
++    def _encode_once(self, text: str, slot) -> list[float]:
++        """统一空间下缓存并复用同一次编码结果。"""
++        key = str(text or "")
++        if self._query_cache is not None and self._query_cache[0] == key:
++            return list(self._query_cache[1])
++        vector = slot.embed_query(key) or []
++        if vector:
++            self._query_cache = (key, list(vector))
++        return vector
+ 
+     @classmethod
+     def from_clip(cls, clip):
+@@ -35,7 +54,15 @@ class EmbeddingRouter:
+         image_kind = scheme.IMAGE_EMBEDDER
+         text_kind = scheme.TEXT_EMBEDDER
+         visual = None
+-        if image_kind == "chinese_clip":
++        wemm = None
++        if image_kind == "wemm" or text_kind == "wemm":
++            # 统一空间：一个模型同时服务两个槽，共用同一个实例，
++            # 避免两个 slot 各建一次模型（显存翻倍且两实例状态可能不一致）。
++            from .wemm_sidecar import WeMMSidecarEmbedder
++            wemm = WeMMSidecarEmbedder()
++        if image_kind == "wemm":
++            visual = wemm
++        elif image_kind == "chinese_clip":
+             from .chinese_clip_visual import ChineseClipVisualEmbedder
+             visual = ChineseClipVisualEmbedder.shared()
+         elif clip is not None:
+@@ -44,7 +71,9 @@ class EmbeddingRouter:
+         else:
+             raise ValueError(f"unknown SENTRIX_IMAGE_EMBEDDER: {image_kind}")
+         text = None
+-        if text_kind == "bge":
++        if text_kind == "wemm":
++            text = wemm
++        elif text_kind == "bge":
+             from .bge_text import BgeM3TextQueryEmbedder
+             text = BgeM3TextQueryEmbedder()
+         elif clip is not None:
+@@ -67,6 +96,8 @@ class EmbeddingRouter:
+         try:
+             if not self.visual_available:
+                 return []
++            if self.unified_space:
++                return self._encode_once(text, self.visual)
+             return self.visual.embed_query(text) or []
+         finally:
+             self._timing_events.append({
+@@ -79,6 +110,8 @@ class EmbeddingRouter:
+         try:
+             if not self.text_available:
+                 return []
++            if self.unified_space:
++                return self._encode_once(text, self.text)
+             return self.text.embed_query(text) or []
+         finally:
+             self._timing_events.append({
+diff --git a/backend/embeddings/scheme.py b/backend/embeddings/scheme.py
+index 6041039f..3ba952e3 100644
+--- a/backend/embeddings/scheme.py
++++ b/backend/embeddings/scheme.py
+@@ -1,20 +1,89 @@
+-"""单一检索方案（钉死，不再 env 切换）。
++"""检索方案注册表（单一入口，整方案原子切换）。
+ 
+-历史教训：IMAGE/TEXT embedder 曾多次被 env/.env 切换（clip / chinese_clip / bge），
+-造成 memory_vectors、ANN 索引、FTS 各套并存且互不匹配，检索时好时坏。
+-现在把系统**固定为一套**，所有写入/查询/索引都只认这套：
++历史教训（务必读完再改）：IMAGE/TEXT embedder 曾各自被 env/.env 切换
++（clip / chinese_clip / bge），两个槽位**独立**变化，于是出现
++memory_vectors、ANN 索引、FTS 各套并存且互不匹配，**检索时好时坏且不报错**。
++现在把系统固定为一套。
+ 
+-  IMAGE (visual/asset 通道) = chinese_clip   -> chinese-clip-ViT-L-14 (dim 768)
+-  TEXT  (semantic/episodic) = bge            -> BAAI/bge-m3            (dim 1024)
++本文件引入 SENTRIX_EMBEDDING_SCHEME，与当初出事故的那批 env 有本质区别——
++不是"可以随便切"，而是：
+ 
+-旧的其它模型行仍保留在库里不删（避免误删/回溯），但**检索与新建都不再触碰它们**：
+-- 新写入只用本方案的模型名；
+-- 查询 embedding 只用本方案的两个 slot；
+-- 重建索引只取本方案的模型行。
++  1. **一次切换整个方案**，不是两个槽位各切各的。方案内部保证图与文同空间，
++     从根上排除了"图片向量是 A、查询向量是 B"这种错配。
++  2. **切换必须伴随重建索引**。向量库按 model_name 分套存放，查询侧会做一致性
++     校验（见 backend/embeddings/consistency.py），不匹配就显式报错而不是返回空。
++  3. 默认值仍是历史行为（legacy），不显式设置就一切照旧。
++
++  legacy = chinese_clip(768d, 图) + bge-m3(1024d, 文本)，两个独立空间
++  wemm   = tencent/WeMM-Embedding-2B，文本/图像/视频**同一个 2048 维空间**
++
++旧的其它模型行仍保留在库里不删（避免误删/回溯），但检索与新建只认当前方案。
+ """
+ 
+-IMAGE_EMBEDDER = "chinese_clip"
+-TEXT_EMBEDDER = "bge"
+-# 对应写入 memory_vectors.model_name
+-IMAGE_MODEL = "chinese-clip-ViT-L-14"
+-TEXT_MODEL = "BAAI/bge-m3"
++from __future__ import annotations
++
++import logging
++import os
++
++log = logging.getLogger(__name__)
++
++SCHEMES = {
++    "legacy": {
++        "image_embedder": "chinese_clip",
++        "text_embedder": "bge",
++        "image_model": "chinese-clip-ViT-L-14",
++        "text_model": "BAAI/bge-m3",
++        "unified": False,
++        "note": "历史方案：图文两个独立空间",
++    },
++    "wemm_visual": {
++        # 只把图片通道换成 WeMM，文本通道仍是 bge。
++        # 存在的意义：分阶段验证。图片向量和文本向量分布在不同的 space
++        # （visual vs semantic/episodic），各自内部自洽，所以混合不会错配；
++        # 但它不是"两个 env 各切各的"——它仍是一个具名方案，整体切换。
++        "image_embedder": "wemm",
++        "text_embedder": "bge",
++        "image_model": "tencent/WeMM-Embedding-2B",
++        "text_model": "BAAI/bge-m3",
++        "unified": False,
++        "note": "图片用 WeMM、文本仍用 bge：只重建视觉向量的中间态",
++    },
++    "wemm": {
++        "image_embedder": "wemm",
++        "text_embedder": "wemm",
++        "image_model": "tencent/WeMM-Embedding-2B",
++        "text_model": "tencent/WeMM-Embedding-2B",
++        "unified": True,
++        "note": "统一多模态空间：文本/图像/视频同空间，跨模态检索原生成立",
++    },
++}
++
++DEFAULT_SCHEME = "legacy"
++
++
++def _active_name() -> str:
++    name = str(os.getenv("SENTRIX_EMBEDDING_SCHEME", "") or "").strip().lower()
++    if not name:
++        return DEFAULT_SCHEME
++    if name not in SCHEMES:
++        log.error("未知的 SENTRIX_EMBEDDING_SCHEME=%r，回退到 %s", name, DEFAULT_SCHEME)
++        return DEFAULT_SCHEME
++    return name
++
++
++ACTIVE_SCHEME = _active_name()
++_ACTIVE = SCHEMES[ACTIVE_SCHEME]
++
++IMAGE_EMBEDDER = _ACTIVE["image_embedder"]
++TEXT_EMBEDDER = _ACTIVE["text_embedder"]
++IMAGE_MODEL = _ACTIVE["image_model"]
++TEXT_MODEL = _ACTIVE["text_model"]
++UNIFIED_SPACE = _ACTIVE["unified"]
++
++if ACTIVE_SCHEME != DEFAULT_SCHEME:
++    # 切方案必须重建索引，否则查询向量与库里向量不同源，检索会静默变差。
++    log.warning(
++        "检索方案 = %s（%s）。若该 scope 的向量不是用这套模型建的，"
++        "检索结果无效——请先跑重建：scripts/maintenance/rebuild_scope_vectors.py",
++        ACTIVE_SCHEME, _ACTIVE["note"],
++    )
+diff --git a/backend/model_clients.py b/backend/model_clients.py
+index 0a90936d..4e270896 100644
+--- a/backend/model_clients.py
++++ b/backend/model_clients.py
+@@ -1039,6 +1039,7 @@ class GammaClient:
+         """Streaming variant: buffer chunks, capture TTFT/tokens/throughput."""
+         t0 = time.perf_counter()
+         first_token_t = None
++        generation_started_t = None
+         chunks = []
+         prompt_tokens = None
+         completion_tokens = None
+@@ -1062,7 +1063,10 @@ class GammaClient:
+                 except (json.JSONDecodeError, ValueError):
+                     continue
+                 delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
++                reasoning_part = delta.get("reasoning_content") or ""
+                 text_part = delta.get("content") or ""
++                if generation_started_t is None and (reasoning_part or text_part):
++                    generation_started_t = time.perf_counter()
+                 if text_part:
+                     if first_token_t is None:
+                         first_token_t = time.perf_counter()
+@@ -1076,9 +1080,13 @@ class GammaClient:
+         ttft_ms = round((first_token_t - t0) * 1000, 1) if first_token_t else None
+         total_ms = round((total_t - t0) * 1000, 1)
+         gen_ms = round((total_t - (first_token_t or t0)) * 1000, 1) if first_token_t else None
+-        tps = round(completion_tokens / (gen_ms / 1000), 1) if completion_tokens and gen_ms and gen_ms > 0 else None
++        decode_ms = (round((total_t - generation_started_t) * 1000, 1)
++                     if generation_started_t else gen_ms)
++        tps = (round(completion_tokens / (decode_ms / 1000), 1)
++               if completion_tokens and decode_ms and decode_ms > 0 else None)
+         self._record_call_metrics(role, model, endpoint_base, {
+             "ttft_ms": ttft_ms, "total_ms": total_ms,
++            "generation_ms": decode_ms,
+             "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+             "tokens_per_second": tps, "streamed": True,
+             **(budget_metrics or {}),
+diff --git a/backend/pipeline.py b/backend/pipeline.py
+index 8724b17d..b76b277c 100644
+--- a/backend/pipeline.py
++++ b/backend/pipeline.py
+@@ -107,18 +107,27 @@ class IngestionPipeline:
+         return " ".join(filter(None, [caption, place, object_text, event_type, ocr_text]))
+ 
+     def _field_desc_embed(self, text: str):
+-        """用 bge-m3 sidecar 编码完整描述；失败返回 (None, None)，不阻塞语义导入。
++        """用当前方案的文本嵌入器编码完整描述；失败返回 (None, None)，不阻塞语义导入。
+ 
+-        复用带熔断的 BgeM3TextQueryEmbedder（sidecar 死亡时快速返回空向量），
++        复用带熔断的 sidecar 客户端（sidecar 死亡时快速返回空向量），
+         生成失败仅跳过 field_desc 通道，绝不让图片导入报错。
+         """
+         try:
+-            from .embeddings.bge_text import BgeM3TextQueryEmbedder
+-            if getattr(self, "_field_desc_embedder", None) is None:
+-                self._field_desc_embedder = BgeM3TextQueryEmbedder()
+-            vector = self._field_desc_embedder.embed_query(text)
++            embedder = getattr(self, "_field_desc_embedder", None)
++            if embedder is None:
++                # 必须跟随当前检索方案，不能写死 bge：切到 wemm 后若这里仍用 bge，
++                # field_desc 空间会混入另一套模型的向量，破坏"全流程单一嵌入模型"。
++                from .embeddings import scheme
++                if scheme.TEXT_EMBEDDER == "wemm":
++                    from .embeddings.wemm_sidecar import WeMMSidecarEmbedder
++                    embedder = WeMMSidecarEmbedder()
++                else:
++                    from .embeddings.bge_text import BgeM3TextQueryEmbedder
++                    embedder = BgeM3TextQueryEmbedder()
++                self._field_desc_embedder = embedder
++            vector = embedder.embed_query(text)
+             if vector:
+-                return vector, self._field_desc_embedder.model_id
++                return vector, embedder.model_id
+         except Exception:
+             pass
+         return None, None
+diff --git a/backend/tests/test_photobench_protocol_contract.py b/backend/tests/test_photobench_protocol_contract.py
+index 819a4a0c..8fb335dd 100644
+--- a/backend/tests/test_photobench_protocol_contract.py
++++ b/backend/tests/test_photobench_protocol_contract.py
+@@ -47,8 +47,24 @@ class PhotoBenchProtocolContractTests(unittest.TestCase):
+         source = inspect.getsource(app._tool_loop_turn)
+         self.assertIn('call_type == "writer"', source)
+         self.assertIn('"SENTRIX_NINFER_WRITER_MAX_TOKENS", "12288"', source)
+-        self.assertIn('reasoning_effort = "xhigh"', source)
++        self.assertIn('"SENTRIX_NINFER_WRITER_REASONING_EFFORT", "xhigh"', source)
+         self.assertIn('else "none"', source)
++        self.assertIn('use_final_writer=is_ninfer_runtime', source)
++
++    def test_ninfer_final_writer_is_a_dedicated_delivery_stage(self):
++        source = inspect.getsource(runtime.AgentRuntime.run)
++        self.assertIn('self.use_final_writer and answer_context_enabled', source)
++        self.assertIn('build_answer_writer_messages', source)
++        self.assertIn('turn.budget.has_final_reserve()', source)
++        self.assertIn('agent_step_budget_exhausted', source)
++        self.assertIn('writer_failed_fallback', source)
++
++    def test_stream_metrics_include_hidden_reasoning_in_generation_time(self):
++        from backend import model_clients
++        source = inspect.getsource(model_clients.GammaClient._chat_openai_stream)
++        self.assertIn('delta.get("reasoning_content")', source)
++        self.assertIn('generation_started_t', source)
++        self.assertIn('"generation_ms": decode_ms', source)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/services/photobench/backend/benchmark_orchestrator.py b/services/photobench/backend/benchmark_orchestrator.py
+index cecba559..59c6d359 100644
+--- a/services/photobench/backend/benchmark_orchestrator.py
++++ b/services/photobench/backend/benchmark_orchestrator.py
+@@ -583,10 +583,164 @@ def now_iso() -> str:
+     return datetime.now().astimezone().isoformat()
+ 
+ 
++# --- run.json lazy item loading -------------------------------------------
++# Every run.json embeds the full per-question result set.  For the 1167-question
++# suites that single array reaches ~460 MB, and parsing all of them eagerly kept
++# ~20 GB resident even while idle, which is what pushed this process into the
++# kernel OOM killer.  The array is byte-skipped while reading metadata and
++# materialised from disk on first access.
++_RUN_ITEMS_MARK = b'\n  "items":'
++_RUN_ITEMS_CLOSE = b"\n  ]"
++_RUN_ITEMS_WS = b" \t\r\n"
++
++
++class LazyItems:
++    """Sequence view over a run's heavy ``items`` array, loaded on demand."""
++
++    __slots__ = ("_path", "_count", "_items")
++
++    def __init__(self, path, count):
++        self._path = path
++        self._count = int(count or 0)
++        self._items = None
++
++    def to_list(self) -> list:
++        if self._items is None:
++            items = []
++            try:
++                payload = json.loads(self._path.read_text(encoding="utf-8"))
++                if isinstance(payload, dict) and isinstance(payload.get("items"), list):
++                    items = payload["items"]
++            except (OSError, json.JSONDecodeError):
++                items = []
++            self._items = items
++        return self._items
++
++    def release(self) -> None:
++        """Drop the materialised copy so a long-lived process can reclaim it."""
++        self._items = None
++
++    # --- sequence protocol ---
++    def __len__(self):
++        return self._count
++
++    def __bool__(self):
++        return self._count > 0
++
++    def __iter__(self):
++        return iter(self.to_list())
++
++    def __getitem__(self, index):
++        return self.to_list()[index]
++
++    def __setitem__(self, index, value):
++        self.to_list()[index] = value
++
++    def __delitem__(self, index):
++        del self.to_list()[index]
++        self._count = len(self._items)
++
++    def __contains__(self, value):
++        return value in self.to_list()
++
++    def __eq__(self, other):
++        if isinstance(other, LazyItems):
++            return list(self) == list(other)
++        return self.to_list() == other
++
++    def __hash__(self):
++        return id(self)
++
++    def __repr__(self):
++        return f"<LazyItems count={self._count}>"
++
++    # --- list mutation: resume() rehydrates a proxy into a live BenchmarkRun ---
++    def append(self, value):
++        self.to_list().append(value)
++        self._count = len(self._items)
++
++    def extend(self, values):
++        self.to_list().extend(values)
++        self._count = len(self._items)
++
++    def insert(self, index, value):
++        self.to_list().insert(index, value)
++        self._count = len(self._items)
++
++    def pop(self, index=-1):
++        v = self.to_list().pop(index)
++        self._count = len(self._items)
++        return v
++
++    def remove(self, value):
++        self.to_list().remove(value)
++        self._count = len(self._items)
++
++    def clear(self):
++        self.to_list().clear()
++        self._count = 0
++
++    def sort(self, **kwargs):
++        self.to_list().sort(**kwargs)
++
++    def reverse(self):
++        self.to_list().reverse()
++
++    # --- copy support: never duplicate the payload, just re-point at disk ---
++    def __copy__(self):
++        return LazyItems(self._path, self._count)
++
++    def __deepcopy__(self, memo):
++        clone = LazyItems(self._path, self._count)
++        memo[id(self)] = clone
++        return clone
++
++
++def _json_default(value):
++    """Teach json.dumps how to emit a LazyItems proxy."""
++    if isinstance(value, LazyItems):
++        return value.to_list()
++    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
++
++
++def load_run_state(path: Path):
++    """Return ``(state, item_count)`` for a run.json without parsing ``items``.
++
++    ``run.json`` is written by ``json.dumps(..., indent=2)``, so string values
++    never contain a literal newline.  That makes the first ``\n  ]`` after the
++    array opener an unambiguous end-of-array marker for the top-level array.
++    """
++    data = path.read_bytes()
++    mark = data.find(_RUN_ITEMS_MARK)
++    if mark < 0:
++        state = json.loads(data.decode("utf-8"))
++        items = state.get("items")
++        return state, len(items) if isinstance(items, list) else 0
++    tail = data[mark + len(_RUN_ITEMS_MARK):]
++    probe = tail.lstrip(_RUN_ITEMS_WS)
++    if not probe.startswith(b"["):
++        state = json.loads(data.decode("utf-8"))
++        items = state.get("items")
++        return state, len(items) if isinstance(items, list) else 0
++    bracket = mark + len(_RUN_ITEMS_MARK) + (len(tail) - len(probe))
++    cursor = bracket + 1
++    while cursor < len(data) and data[cursor:cursor + 1] in _RUN_ITEMS_WS:
++        cursor += 1
++    if data[cursor:cursor + 1] == b"]":
++        count = 0
++        end = cursor + 1
++    else:
++        close = data.index(_RUN_ITEMS_CLOSE, bracket)
++        count = data.count(b"\n    {", bracket, close)
++        end = close + len(_RUN_ITEMS_CLOSE)
++    state = json.loads((data[:bracket] + b"[]" + data[end:]).decode("utf-8"))
++    return state, count
++
++
+ def atomic_json(path: Path, value) -> None:
+     path.parent.mkdir(parents=True, exist_ok=True)
+     tmp = path.with_suffix(path.suffix + ".tmp")
+-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
++    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=_json_default) + "\n", encoding="utf-8")
+     tmp.replace(path)
+ 
+ 
+@@ -899,8 +1053,24 @@ def upload_files(url: str, fields: dict, files: list[tuple[str, str, bytes]], ti
+     ctx = ssl.create_default_context()
+     ctx.check_hostname = False
+     ctx.verify_mode = ssl.CERT_NONE
+-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+-        return json.loads(resp.read())
++    try:
++        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
++            return json.loads(resp.read())
++    except urllib.error.HTTPError as exc:
++        raw = exc.read().decode("utf-8", errors="replace")[:2000]
++        detail = raw.strip()
++        try:
++            parsed = json.loads(raw)
++            if isinstance(parsed, dict):
++                detail = parsed.get("detail") or parsed.get("error") or parsed.get("message") or parsed
++            else:
++                detail = parsed
++        except (json.JSONDecodeError, TypeError):
++            pass
++        if isinstance(detail, (dict, list)):
++            detail = json.dumps(detail, ensure_ascii=False)
++        detail = str(detail or exc.reason or "upload failed")[:1000]
++        raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {detail}") from exc
+ 
+ 
+ RUN_MODES = ("full", "reuse", "build", "resume")
+@@ -1756,6 +1926,9 @@ class GpuSampler:
+                     sample["memory_scope"] = process_memory.get("memory_scope") or sample.get("memory_scope")
+                     sample["process_memory_scope"] = process_memory.get("process_memory_scope")
+                     sample["model_process_system_memory_scope"] = process_memory.get("model_process_system_memory_scope")
++                    sample["model_process_host_memory_mib"] = process_memory.get("model_process_host_memory_mib")
++                    sample["model_process_gpu_memory_mib"] = process_memory.get("model_process_gpu_memory_mib")
++                    sample["model_process_gpu_memory_source"] = process_memory.get("model_process_gpu_memory_source")
+                     sample["benchmark_process_memory_scope"] = process_memory.get("benchmark_process_memory_scope")
+                     sample["benchmark_process_gpu_memory_scope"] = process_memory.get("benchmark_process_gpu_memory_scope")
+                     sample["process_attribution"] = process_memory.get("process_attribution")
+@@ -1829,6 +2002,7 @@ class GpuSampler:
+             "power_draw_w", "sm_clock_mhz", "other_processes_memory_mib",
+             "all_processes_memory_mib", "system_memory_used_mib", "system_memory_total_mib",
+             "model_process_system_memory_used_mib", "system_memory_delta_mib",
++            "model_process_host_memory_mib", "model_process_gpu_memory_mib",
+             "sentrix_stack_pss_mib", "product_stack_memory_mib",
+             "kv_cache_device_used_tokens", "kv_cache_device_capacity_tokens",
+             "kv_cache_device_used_pages", "kv_cache_device_capacity_pages",
+@@ -2084,6 +2258,8 @@ class BenchmarkRun:
+         self._gpu_sampling_started = False
+         self._gpu_sampler = GpuSampler(self.telemetry_provider, on_sample=self._persist_gpu_sample)
+         self._cancel = threading.Event()
++        self._infrastructure_failure = threading.Event()
++        self._infrastructure_error: str | None = None
+         self._phase_started_perf: dict[str, float] = {}
+         self._persist_condition = threading.Condition(self.lock)
+         self._persist_requested = 0
+@@ -2479,6 +2655,13 @@ class BenchmarkRun:
+                     self.state["current_phase"] = name
+                     self.state.setdefault("telemetry_live", {})["current_phase"] = name
+                 fn()
++                phase_state = (self.state.get("phases") or {}).get(name) or {}
++                if name == "photo_import" and phase_state.get("status") == "partial":
++                    self._cancel_remote_batch("photo_import_partial")
++                    raise RuntimeError(
++                        "photo import incomplete; refusing to continue an invalid benchmark: "
++                        f"{phase_state.get('error') or 'one or more media files failed'}"
++                    )
+             if self._cancel.is_set():
+                 if self._current_phase:
+                     self._record_phase(self._current_phase, "status", "cancelled")
+@@ -3209,6 +3392,9 @@ class BenchmarkRun:
+             self._gpu_sampling_started = True
+             self._gpu_sampler.start()
+         scope_id = self.state["scope_id"]
++        health_error = self._probe_model_health_error()
++        if health_error:
++            raise RuntimeError(f"model service is unhealthy before QA evaluation: {health_error}")
+         assets_data = request_json(f"{self.sentrix_url}/api/assets?scope_id={scope_id}&limit=2000", timeout=60)
+         assets = assets_data.get("assets", [])
+         assets_by_name = {}
+@@ -3352,6 +3538,24 @@ class BenchmarkRun:
+                             self._qa_agent_completed += 1
+                             record_qa_progress()
+                             self.persist()
++                        if self._infrastructure_failure.is_set():
++                            cancelled = 0
++                            for queued_future, (queued_kind, _queued_index) in list(pending.items()):
++                                if queued_kind == "agent" and queued_future.cancel():
++                                    pending.pop(queued_future, None)
++                                    cancelled += 1
++                            self._record_phase(
++                                "qa_eval", "infrastructure_failure",
++                                self._infrastructure_error or "model service unavailable",
++                            )
++                            if cancelled:
++                                previous = int(
++                                    (self.state.get("phases", {}).get("qa_eval", {})
++                                     .get("agent_cancelled_before_start") or 0)
++                                )
++                                self._record_phase(
++                                    "qa_eval", "agent_cancelled_before_start", previous + cancelled,
++                                )
+                         if not any(k == "agent" for k, _ in pending.values()):
+                             record_agent_phase_finished()
+                     else:
+@@ -3397,11 +3601,7 @@ class BenchmarkRun:
+                 self.state["items"].sort(key=lambda it: it.get("_index", 0))
+                 for it in self.state["items"]:
+                     it.pop("_index", None)
+-                executed = sum(1 for it in self.state["items"]
+-                               if it.get("execution_status") == "completed")
+-                self.state["run_valid"] = bool(
+-                    len(self.state["items"]) == total_qa and executed == total_qa
+-                )
++                self.state["run_valid"] = self._compute_run_valid(total_qa)
+                 record_qa_progress()
+                 self.persist()
+ 
+@@ -3409,6 +3609,7 @@ class BenchmarkRun:
+         failed_items = [item for item in self.state["items"] if (
+             item.get("execution_status") in {"failed", "timeout"}
+             or item.get("judge_status") == "failed"
++            or self._unscorable_agent_error(item)
+         )]
+         qa_phase_result = {
+             "total_seconds": round(t1 - t0, 1),
+@@ -3429,37 +3630,204 @@ class BenchmarkRun:
+             self._phase_done("qa_eval", qa_phase_result)
+ 
+     def _resolve_qa_concurrency(self) -> int:
+-        """Resolve requested QA concurrency and clamp it to runtime capacity."""
++        """Resolve QA concurrency from the running model's real capacity.
++
++        Precedence for the requested value: an explicit operator override, then
++        the model's declared ``max_num_seqs`` from the deploy snapshot, then
++        whatever the serving engine reports right now.  The result is always
++        clamped to that live capacity so concurrent QA requests can never
++        exceed the slots the model actually serves.
++        """
++        runtime_limit = self._runtime_max_concurrency()
+         env_value = str(os.getenv("PHOTOBENCH_QA_CONCURRENCY") or "").strip()
+         requested = None
+         if env_value:
+             try:
+                 requested = max(1, int(env_value))
+             except ValueError:
+-                pass
++                requested = None
+         if requested is None:
++            snapshot_limit = None
+             try:
+                 snapshot = (self.state.get("phases") or {}).get("model_deploy", {}).get("model_state") or {}
+                 if not snapshot:
+                     snapshot = (self.state.get("current_model_snapshot") or {}).get("state") or {}
+-                requested = max(1, int(snapshot.get("max_num_seqs") or 1))
+-            except Exception:
+-                requested = 1
+-        runtime_limit = self._runtime_max_concurrency()
++                declared = snapshot.get("max_num_seqs")
++                if declared is not None:
++                    snapshot_limit = max(1, int(declared))
++            except (TypeError, ValueError, AttributeError):
++                snapshot_limit = None
++            # No pinned override and no deploy snapshot: the running model's own
++            # capacity is the only honest source for how much may be sent.
++            requested = snapshot_limit or runtime_limit or 1
+         self.state["qa_concurrency_requested"] = requested
+         self.state["qa_concurrency_runtime_limit"] = runtime_limit
+         return min(requested, runtime_limit) if runtime_limit is not None else requested
+ 
+     def _runtime_max_concurrency(self) -> int | None:
+-        """Read the serving engine's advertised capacity when available."""
+-        if self.runtime_framework != "ninfer" or not self.telemetry_stats_url:
++        """Read the serving engine's advertised capacity when available.
++
++        QA concurrency must never exceed the slots the model server actually
++        offers, so the limit is read from the running engine rather than from
++        the request: n.infer advertises ``capacity.max_concurrency`` over its
++        stats endpoint, managed vLLM reports the real ``--max-num-seqs`` of the
++        instance it launched.
++        """
++        if self.runtime_framework == "ninfer":
++            if not self.telemetry_stats_url:
++                return None
++            try:
++                stats = request_json(self.telemetry_stats_url, timeout=3)
++                raw_capacity = (stats.get("capacity") or {}).get("max_concurrency")
++                return int(raw_capacity) if raw_capacity is not None and int(raw_capacity) > 0 else None
++            except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
++                return None
++        slots = self._llamacpp_max_concurrency()
++        if slots is not None:
++            return slots
++        return self._manager_max_concurrency()
++
++    def _llamacpp_max_concurrency(self) -> int | None:
++        """llama-server's real parallel slots (``--parallel N``) from ``/props``.
++
++        A llama.cpp endpoint is not launched by the vLLM manager, so the
++        manager's ``/state`` says nothing about it and would leave the run
++        without any live capacity.  llama-server advertises its own slot count,
++        which is exactly the number of requests it can serve at once; sending
++        more than that makes the server queue or reject work.
++        """
++        base = str(getattr(self, "vllm_model_base_url", "") or "").strip().rstrip("/")
++        if not base:
++            return None
++        root = base[:-3] if base.endswith("/v1") else base
++        try:
++            payload = request_json(f"{root}/props", timeout=3)
++        except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
++            return None
++        if not isinstance(payload, dict):
++            return None
++        try:
++            value = int(payload.get("total_slots"))
++        except (TypeError, ValueError):
++            return None
++        return value if value > 0 else None
++
++    def _manager_max_concurrency(self) -> int | None:
++        """Running vLLM instance's real serving slots (``--max-num-seqs``).
++
++        The manager's ``/state`` describes the instance it actually launched, so
++        it stays authoritative even when the request asks for more concurrency
++        than the model can serve.  The instance must also govern the endpoint
++        being benchmarked, otherwise a manager pointed at a different server
++        would silently cap or inflate the run.
++        """
++        if self.use_cloud_model:
++            return None
++        if self.runtime_framework not in {"vllm", "vllm_manager", "generic"}:
++            return None
++        manager_url = str(getattr(self, "vllm_api_url", "") or "").strip().rstrip("/")
++        if not manager_url:
++            # API/CLI submissions may omit the manager URL; the deployment
++            # default is still the manager that launched the served model.
++            manager_url = str(DEFAULT_VLLM_API_URL or "").strip().rstrip("/")
++        if not manager_url:
+             return None
+         try:
+-            stats = request_json(self.telemetry_stats_url, timeout=3)
+-            raw_capacity = (stats.get("capacity") or {}).get("max_concurrency")
+-            return int(raw_capacity) if raw_capacity is not None and int(raw_capacity) > 0 else None
++            payload = request_json(f"{manager_url}/state", timeout=3)
+         except (OSError, RuntimeError, ValueError, TypeError, AttributeError):
+             return None
++        if not isinstance(payload, dict) or not self._manager_governs_endpoint(payload):
++            return None
++        for key in ("max_num_seqs", "max_num_seqs_running", "max_concurrency"):
++            try:
++                value = int(payload.get(key))
++            except (TypeError, ValueError):
++                continue
++            if value > 0:
++                return value
++        return None
++
++    def _manager_governs_endpoint(self, manager_state: dict) -> bool:
++        """True when the manager's running instance serves our model endpoint.
++
++        Both sides must agree on a local endpoint and the serving port; a
++        manager describing a different host or port tells us nothing about the
++        capacity of the model this run actually talks to.
++        """
++        endpoint = urlparse(self.vllm_model_base_url)
++        local_hosts = {"127.0.0.1", "localhost", "::1", local_lan_ip()}
++        if (endpoint.hostname or "").strip().lower() not in local_hosts:
++            return False
++        try:
++            endpoint_port = int(endpoint.port)
++        except (TypeError, ValueError):
++            return False
++        try:
++            managed_port = int(manager_state.get("port"))
++        except (TypeError, ValueError):
++            managed_port = None
++        if managed_port is not None:
++            return endpoint_port == managed_port
++        managed_base = str(manager_state.get("base_url") or "").rstrip("/")
++        if managed_base:
++            return managed_base == str(self.vllm_model_base_url or "").rstrip("/")
++        return False
++
++    @staticmethod
++    def _unscorable_agent_error(item: dict) -> str | None:
++        """Return an Agent failure that must not be submitted to Judge."""
++        status = str(item.get("agent_status") or "").strip().lower()
++        reason = str(item.get("agent_reason") or item.get("error") or "").strip()
++        normalized = reason.lower()
++        if status == "error":
++            return reason or "agent_status=error"
++        if normalized.startswith(("planner_call_error", "model_call_error")):
++            return reason
++        return None
++
++    def _model_health_url(self) -> str:
++        if self.runtime_framework != "ninfer":
++            return ""
++        stats_url = str(self.telemetry_stats_url or "").strip()
++        if stats_url:
++            return stats_url.removesuffix("/stats").rstrip("/") + "/health"
++        base = normalize_model_base_url(self.vllm_model_base_url).removesuffix("/v1").rstrip("/")
++        return f"{base}/health" if base else ""
++
++    def _probe_model_health_error(self) -> str | None:
++        health_url = self._model_health_url()
++        if not health_url:
++            return None
++        try:
++            payload = request_json(health_url, timeout=3)
++        except Exception as exc:
++            return str(exc)
++        status = str((payload or {}).get("status") or "").strip().lower()
++        if status in {"ok", "ready", "healthy", "available"}:
++            return None
++        return f"{health_url} returned status={status or 'unknown'}"
++
++    def _trip_infrastructure_circuit(self, reason: str) -> None:
++        with self.lock:
++            if not self._infrastructure_error:
++                self._infrastructure_error = str(reason or "model service unavailable")
++            self._infrastructure_failure.set()
++
++    def _compute_run_valid(self, total_qa: int) -> bool:
++        items = self.state.get("items") or []
++        phases = self.state.get("phases") or {}
++        invalid_phase = any(
++            str(phase.get("status") or "").lower() in {"partial", "failed", "stalled"}
++            for phase in phases.values() if isinstance(phase, dict)
++        )
++        return bool(
++            not invalid_phase
++            and not self._infrastructure_failure.is_set()
++            and len(items) == total_qa
++            and all(item.get("execution_status") == "completed" for item in items)
++            and all(item.get("judge_status") == "completed" for item in items)
++            and not any(self._unscorable_agent_error(item) for item in items)
++        )
+ 
+     @staticmethod
+     def _resolve_judge_concurrency(qa_concurrency: int) -> int:
+@@ -3495,6 +3863,14 @@ class BenchmarkRun:
+                 "answer_evidence_image_ids": answer_image_ids,
+                 "answer_evidence_video_ids": answer_video_ids,
+                 "execution_status": "scheduled"}
++        if self._infrastructure_failure.is_set():
++            item.update({
++                "execution_status": "failed",
++                "failed": True,
++                "error": self._infrastructure_error or "model service unavailable",
++                "judge_status": "skipped",
++            })
++            return item
+         for field in ("task_type", "question_type", "tags", "angle", "difficulty", "answerability",
+                       "scope", "scope_anchor", "required_evidence_sources", "query_anchors",
+                       "expected_action", "answer_claims", "alternative_evidence_media_sets"):
+@@ -3686,7 +4062,18 @@ class BenchmarkRun:
+             item["delivery_status"] = resp.get("delivery_status") or {}
+             item["agent_stability"] = self._agent_stability(item)
+             item["attribution"] = self._derive_attribution(item)
+-            item["execution_status"] = "completed"
++            agent_error = self._unscorable_agent_error(item)
++            if agent_error:
++                item.update({
++                    "execution_status": "failed",
++                    "failed": True,
++                    "error": agent_error,
++                })
++                health_error = self._probe_model_health_error()
++                if health_error:
++                    self._trip_infrastructure_circuit(health_error)
++            else:
++                item["execution_status"] = "completed"
+         except Exception as e:
+             message = str(e).lower()
+             if "timed out" in message or "timeout" in message:
+@@ -3861,7 +4248,10 @@ class BenchmarkRun:
+             ttft_ms = cls._numeric_ms(call.get("ttft_ms"))
+             child_tools = by_call.get(index, [])
+             tool_ms = round(sum(float(tool.get("duration_ms") or 0) for tool in child_tools), 1)
+-            generation_ms = round(max(0.0, model_ms - (ttft_ms or 0)), 1) if ttft_ms is not None else model_ms
++            generation_ms = cls._numeric_ms(call.get("generation_ms"))
++            if generation_ms is None:
++                generation_ms = (round(max(0.0, model_ms - (ttft_ms or 0)), 1)
++                                 if ttft_ms is not None else model_ms)
+             call["agent_loop_total_ms"] = round(model_ms + tool_ms, 1)
+             call["agent_loop_timing"] = {
+                 "model_ms": round(model_ms, 1),
+@@ -5128,39 +5518,83 @@ class OrchestratorRepository:
+             atomic_json(self._reviews_path(run_id), stored)
+             return {"saved": len(reviews), **stored}
+ 
++    def release_transient_items(self) -> None:
++        """Drop result sets materialised for a finished request.
++
++        Historical runs keep their ``items`` on disk; the copy pulled into RAM
++        only has to outlive the request that asked for it. Live runs own their
++        list and are never released.
++        """
++        with self.lock:
++            for run in self.runs.values():
++                if isinstance(run, BenchmarkRun):
++                    continue
++                holder = run.get("items")
++                if isinstance(holder, LazyItems):
++                    holder.release()
++
+     def _load_existing(self):
+         if not self.results_root.exists():
+             return
+         dirty_statuses = {"running", "pending", "cancelling"}
+         for path in self.results_root.glob("*/run.json"):
+             try:
+-                run = json.loads(path.read_text(encoding="utf-8"))
++                run, item_count = load_run_state(path)
+                 rid = run.get("run_id")
+                 if not rid:
+                     continue
+-                changed = False
+                 status = run.get("status")
+-                if status in dirty_statuses:
+-                    run["status"] = "interrupted" if status == "running" else "cancelled"
+-                    run["finished_at"] = run.get("finished_at") or now_iso()
+-                    for ph in (run.get("phases") or {}).values():
+-                        if ph.get("status") in dirty_statuses:
+-                            ph["status"] = "interrupted" if status == "running" else "cancelled"
+-                            ph["error"] = "Process restarted"
+-                    changed = True
+                 rejudge = run.get("rejudge") or {}
+-                if rejudge.get("status") in dirty_statuses:
+-                    rejudge["status"] = "interrupted"
+-                    rejudge["finished_at"] = rejudge.get("finished_at") or now_iso()
+-                    rejudge["error"] = "Process restarted"
+-                    changed = True
+-                if changed:
+-                    atomic_json(path, run)
+-                # Store as a lightweight dict for listing (not a full BenchmarkRun)
++                if (status in dirty_statuses
++                        or rejudge.get("status") in dirty_statuses):
++                    # Repairing a dirty run rewrites run.json, so it needs the
++                    # real payload: re-read it in full.  This only ever touches
++                    # the handful of runs left dirty by an unclean shutdown.
++                    repaired = self._repair_dirty_run(path, run)
++                    if repaired is None:
++                        continue
++                    run = repaired
++                    items = run.pop("items", None)
++                    if isinstance(items, list):
++                        item_count = len(items)
++                # Store as a lightweight dict for listing (not a full
++                # BenchmarkRun).  `items` stays on disk and is materialised on
++                # first access, so N historical runs cost N * metadata bytes.
++                run["items"] = LazyItems(path, item_count)
+                 self.runs[rid] = run
+-            except (OSError, KeyError, json.JSONDecodeError):
++            except (OSError, KeyError, json.JSONDecodeError, ValueError):
+                 continue
+ 
++    @staticmethod
++    def _repair_dirty_run(path: Path, cheap_state: dict) -> dict | None:
++        """Persist the interrupted/cancelled repair for a run left dirty on disk."""
++        dirty_statuses = {"running", "pending", "cancelling"}
++        try:
++            state = json.loads(path.read_text(encoding="utf-8"))
++        except (OSError, json.JSONDecodeError):
++            return None
++        if not isinstance(state, dict) or state.get("run_id") != cheap_state.get("run_id"):
++            return None
++        changed = False
++        status = state.get("status")
++        if status in dirty_statuses:
++            state["status"] = "interrupted" if status == "running" else "cancelled"
++            state["finished_at"] = state.get("finished_at") or now_iso()
++            for ph in (state.get("phases") or {}).values():
++                if ph.get("status") in dirty_statuses:
++                    ph["status"] = "interrupted" if status == "running" else "cancelled"
++                    ph["error"] = "Process restarted"
++            changed = True
++        rejudge = state.get("rejudge") or {}
++        if rejudge.get("status") in dirty_statuses:
++            rejudge["status"] = "interrupted"
++            rejudge["finished_at"] = rejudge.get("finished_at") or now_iso()
++            rejudge["error"] = "Process restarted"
++            changed = True
++        if changed:
++            atomic_json(path, state)
++        return state
++
+     def list_manifests(self) -> list[dict]:
+         manifests = []
+         if BENCHMARK_DATA_ROOT.exists():
+@@ -6967,6 +7401,21 @@ class OrchestratorRepository:
+     @staticmethod
+     def _list_summary(state: dict) -> dict:
+         saved = dict(state.get("summary") or {})
++        # A run loaded from disk keeps its (huge) result set out of memory, so
++        # listing it must not touch `items`.  The summary persisted next to the
++        # results already carries every metric this view needs.
++        if (isinstance(state.get("items"), LazyItems)
++                and saved.get("total") is not None
++                and saved.get("completed") is not None):
++            if saved.get("answer_quality_mean") is None and saved.get("judge_distribution"):
++                counts = {int(k): int(v or 0)
++                          for k, v in (saved["judge_distribution"] or {}).items()
++                          if str(k).lstrip("-").isdigit()}
++                graded = sum(counts.values())
++                if graded:
++                    saved["answer_quality_mean"] = round(
++                        sum(score * count for score, count in counts.items()) / graded, 3)
++            return saved
+         items = state.get("items") or []
+         recalls = [item.get("retrieval_recall") for item in items
+                    if isinstance(item.get("retrieval_recall"), (int, float))]
+@@ -6988,6 +7437,11 @@ class OrchestratorRepository:
+                     or key.startswith(("retrieval_", "media_retrieval_", "image_retrieval_", "video_retrieval_"))
+                     or saved.get(key) is None):
+                 saved[key] = value
++        if isinstance(state.get("items"), LazyItems):
++            # Persist the derived numbers on the in-memory state only, so the
++            # next listing does not have to reload this run's result set just to
++            # recompute the same values. Live runs are deliberately excluded.
++            state["summary"] = dict(saved)
+         return saved
+ 
+     @staticmethod
+@@ -7651,7 +8105,7 @@ class OrchestratorHandler(BaseHTTPRequestHandler):
+                 pass
+ 
+     def _json(self, value, status: int = 200):
+-        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
++        body = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=_json_default).encode()
+         compressed = len(body) >= 1024 and "gzip" in self.headers.get("Accept-Encoding", "").lower()
+         if compressed:
+             body = gzip.compress(body, compresslevel=5)
+@@ -7664,6 +8118,12 @@ class OrchestratorHandler(BaseHTTPRequestHandler):
+             self.send_header("Content-Encoding", "gzip")
+         self.end_headers()
+         self._write_body(body)
++        repo = getattr(self, "repo", None)
++        if repo is not None:
++            try:
++                repo.release_transient_items()
++            except Exception:      # never let bookkeeping break a response
++                pass
+ 
+     def _payload(self) -> dict:
+         length = int(self.headers.get("Content-Length", "0"))
+diff --git a/services/photobench/backend/test_photo_import.py b/services/photobench/backend/test_photo_import.py
+index cc7c3012..472ba0d5 100644
+--- a/services/photobench/backend/test_photo_import.py
++++ b/services/photobench/backend/test_photo_import.py
+@@ -30,6 +30,22 @@ class PhotoImportTests(unittest.TestCase):
+             with self.assertRaisesRegex(RuntimeError, "HTTP 500.*database is locked"):
+                 MODULE.request_json("http://sentrix.test/api/memory-spaces")
+ 
++    def test_upload_files_includes_remote_error_detail(self):
++        error = urllib.error.HTTPError(
++            "http://sentrix.test/api/import",
++            500,
++            "Internal Server Error",
++            {},
++            BytesIO(b'{"detail":"database is locked"}'),
++        )
++        with patch.object(MODULE.urllib.request, "urlopen", side_effect=error):
++            with self.assertRaisesRegex(RuntimeError, "HTTP 500.*database is locked"):
++                MODULE.upload_files(
++                    "http://sentrix.test/api/import",
++                    {"scope_id": "scope-1"},
++                    [("files", "photo.jpg", b"photo")],
++                )
++
+     def test_photo_upload_uses_bounded_concurrency_and_keeps_result_order(self):
+         with tempfile.TemporaryDirectory() as directory:
+             root = Path(directory)
+@@ -197,6 +213,7 @@ class PhotoImportTests(unittest.TestCase):
+         run = MODULE.BenchmarkRun.__new__(MODULE.BenchmarkRun)
+         run.sentrix_url = "http://sentrix.test"
+         run.use_cloud_model = True
++        run.mode = "full"
+         run.state = {
+             "scope_id": "scope-1",
+             "batch_id": "batch-1",
+diff --git a/services/photobench/scripts/start.sh b/services/photobench/scripts/start.sh
+index 10d0447e..f43b13e3 100755
+--- a/services/photobench/scripts/start.sh
++++ b/services/photobench/scripts/start.sh
+@@ -12,7 +12,10 @@ FRONTEND_PORT=${BENCH_DEV_PORT:-5173}
+ LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)
+ BACKEND_PID_FILE="$ROOT_DIR/logs/orchestrator.pid"
+ FRONTEND_PID_FILE="$ROOT_DIR/logs/vite.pid"
+-PHOTOBENCH_QA_CONCURRENCY=${PHOTOBENCH_QA_CONCURRENCY:-12}
++# QA concurrency is derived from the running model's real serving capacity
++# (see _resolve_qa_concurrency); set PHOTOBENCH_QA_CONCURRENCY only to pin a
++# lower explicit ceiling.
++PHOTOBENCH_QA_CONCURRENCY=${PHOTOBENCH_QA_CONCURRENCY:-}
+ PHOTOBENCH_JUDGE_CONCURRENCY=${PHOTOBENCH_JUDGE_CONCURRENCY:-8}
+ PHOTOBENCH_JUDGE_RETRY_ATTEMPTS=${PHOTOBENCH_JUDGE_RETRY_ATTEMPTS:-6}
+ PHOTOBENCH_JUDGE_RETRY_BACKOFF_SECONDS=${PHOTOBENCH_JUDGE_RETRY_BACKOFF_SECONDS:-5}
+diff --git a/services/photobench/tests/test_suite_control.py b/services/photobench/tests/test_suite_control.py
+index fd4e856a..c2f4621b 100644
+--- a/services/photobench/tests/test_suite_control.py
++++ b/services/photobench/tests/test_suite_control.py
+@@ -195,6 +195,54 @@ class SuiteControlTests(unittest.TestCase):
+         self.assertEqual(run.state["qa_concurrency_requested"], 4)
+         self.assertEqual(run.state["qa_concurrency_runtime_limit"], 1)
+ 
++    def test_agent_call_errors_are_unscorable_but_policy_refusal_is_not(self):
++        self.assertEqual(
++            self.run._unscorable_agent_error({"agent_reason": "planner_call_error"}),
++            "planner_call_error",
++        )
++        self.assertEqual(
++            self.run._unscorable_agent_error({
++                "agent_status": "error", "agent_reason": "model_call_error: HTTP 503",
++            }),
++            "model_call_error: HTTP 503",
++        )
++        self.assertIsNone(
++            self.run._unscorable_agent_error({
++                "agent_status": "partial", "agent_reason": "policy_refusal",
++            })
++        )
++
++    def test_run_valid_rejects_partial_pipeline_and_agent_errors(self):
++        valid_item = {
++            "execution_status": "completed",
++            "judge_status": "completed",
++            "agent_status": "complete",
++            "agent_reason": "",
++        }
++        self.run.state["items"] = [valid_item]
++        self.run.state["phases"] = {"pipeline_processing": {"status": "done"}}
++        self.assertTrue(self.run._compute_run_valid(1))
++
++        self.run.state["phases"]["pipeline_processing"]["status"] = "partial"
++        self.assertFalse(self.run._compute_run_valid(1))
++
++        self.run.state["phases"]["pipeline_processing"]["status"] = "done"
++        self.run.state["items"] = [{
++            **valid_item,
++            "execution_status": "failed",
++            "agent_status": "partial",
++            "agent_reason": "planner_call_error",
++        }]
++        self.assertFalse(self.run._compute_run_valid(1))
++
++    def test_ninfer_health_url_uses_stats_listener(self):
++        self.run.runtime_framework = "ninfer"
++        self.run.telemetry_stats_url = "http://127.0.0.1:18101/stats"
++        self.assertEqual(
++            self.run._model_health_url(),
++            "http://127.0.0.1:18101/health",
++        )
++
+     def test_memory_profile_rejects_existing_active_run(self):
+         repository = MODULE.OrchestratorRepository(Path(self.results.name) / "repository")
+         repository.runs[self.run.run_id] = self.run

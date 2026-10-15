@@ -1,0 +1,65 @@
+"""确认重建脚本写进库里的 WeMM 向量，确实对应修正后的文本。
+
+只查一致性不够——还要抽查若干条：用重建脚本自己的 observation_text() 取文本，
+经 WeMM sidecar 重嵌，与库中该行的 WeMM 向量比余弦。应当条条 1.0。
+"""
+import importlib.util
+import json
+import math
+import os
+import sqlite3
+import sys
+
+import httpx
+
+ROOT = "/home/asus/Github/Sentrix-Home-Web"
+sys.path.insert(0, ROOT)
+DB = os.path.join(ROOT, "data/sentrix.db")
+SCOPE = "album_fdef329852e5"
+WEMM = "http://127.0.0.1:8102/embed_text"
+MODEL = "tencent/WeMM-Embedding-2B"
+
+spec = importlib.util.spec_from_file_location(
+    "rb", os.path.join(ROOT, "scripts/maintenance/rebuild_scope_text_vectors.py"))
+rb = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rb)
+
+
+def cosine(a, b):
+    if not a or not b or len(a) != len(b):
+        return None
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else None
+
+
+def main():
+    con = sqlite3.connect(DB)
+    con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT * FROM observations WHERE scope_id=?", (SCOPE,)).fetchall()
+    stored = {r["source_id"]: json.loads(r["vector_json"]) for r in con.execute(
+        "SELECT source_id, vector_json FROM memory_vectors WHERE scope_id=? AND space='semantic' "
+        "AND source_type='observation' AND model_name=?", (SCOPE, MODEL))}
+    print(f"observations={len(rows)}  库中 WeMM 文本向量={len(stored)}")
+
+    client = httpx.Client()
+    sims, missing = [], 0
+    for row in rows:
+        if row["id"] not in stored:
+            missing += 1
+            continue
+        text = rb.observation_text(row)
+        v = client.post(WEMM, json={"text": text}, timeout=60).json().get("vector") or []
+        c = cosine(v, stored[row["id"]])
+        if c is not None:
+            sims.append(c)
+    print(f"缺失向量 {missing} 条")
+    if sims:
+        print(f"余弦 min={min(sims):.8f}  均值={sum(sims)/len(sims):.8f}")
+        print(f"==1.0 的条数: {sum(1 for s in sims if s > 0.99999)}/{len(sims)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

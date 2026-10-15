@@ -1,0 +1,49 @@
+#!/bin/bash
+# 启动 WeMM 的 vLLM(FP8) 嵌入服务（8105）。
+#
+# 与 sidecar 版（scripts/deploy/restart_wemm_sidecar.sh，8102）二选一，
+# 由 8091 的 SENTRIX_WEMM_BACKEND 决定走哪个。
+#
+# 为什么量化：bf16 权重 4.25 GiB；3090 无原生 FP8 算力，但 vLLM 会走 Marlin
+#   weight-only 路径——权重在显存里保持 FP8（2.67 GiB），只在计算时反量化。
+#   实测保真度：文本 0.9974~0.9988、图像 0.9918~0.9965，代价可接受。
+#
+# --max-model-len 必须容纳**最大图片**的 token 数，不能按文本长度设：
+#   相册里最大一张图是 16176 token，设 4096 会让它直接 400。
+#
+# --gpu-memory-utilization 决定 KV cache 预留；0.23 是能跑通 20480 上下文的下限附近。
+set -euo pipefail
+M="${SENTRIX_WEMM_MODEL_PATH:-/home/asus/models/WeMM-Embedding-2B}"
+PORT="${SENTRIX_WEMM_VLLM_PORT:-8105}"
+VLLM_BIN="${SENTRIX_VLLM_BIN:-/home/asus/miniconda3/envs/sentrix-vllm/bin/vllm}"
+cd "$(dirname "$0")/../.."
+
+for p in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader); do
+  tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -qE 'EngineCore|vllm' && kill "$p" 2>/dev/null || true
+done
+sleep 5
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+nohup "$VLLM_BIN" serve "$M" \
+  --runner pooling \
+  --chat-template "$M/embedding_chat_template.jinja" \
+  --trust-remote-code \
+  --host 127.0.0.1 --port "$PORT" \
+  --quantization fp8 \
+  --gpu-memory-utilization "${SENTRIX_WEMM_VLLM_GMU:-0.23}" \
+  --max-model-len 20480 \
+  --enforce-eager \
+  --limit-mm-per-prompt '{"image":1}' \
+  --mm-processor-kwargs '{"size":{"longest_edge":16777216,"shortest_edge":65536}}' \
+  > /tmp/wemm_vllm.log 2>&1 &
+
+for i in $(seq 1 480); do
+  if [ "$(curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/health" 2>/dev/null)" = "200" ]; then
+    echo "WeMM vLLM(FP8) ready on :${PORT} after ${i}s"
+    exit 0
+  fi
+  sleep 1
+done
+echo "启动超时，日志尾部："
+tail -20 /tmp/wemm_vllm.log
+exit 1

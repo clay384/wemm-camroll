@@ -1,0 +1,89 @@
+"""检索方案注册表（单一入口，整方案原子切换）。
+
+历史教训（务必读完再改）：IMAGE/TEXT embedder 曾各自被 env/.env 切换
+（clip / chinese_clip / bge），两个槽位**独立**变化，于是出现
+memory_vectors、ANN 索引、FTS 各套并存且互不匹配，**检索时好时坏且不报错**。
+现在把系统固定为一套。
+
+本文件引入 SENTRIX_EMBEDDING_SCHEME，与当初出事故的那批 env 有本质区别——
+不是"可以随便切"，而是：
+
+  1. **一次切换整个方案**，不是两个槽位各切各的。方案内部保证图与文同空间，
+     从根上排除了"图片向量是 A、查询向量是 B"这种错配。
+  2. **切换必须伴随重建索引**。向量库按 model_name 分套存放，查询侧会做一致性
+     校验（见 backend/embeddings/consistency.py），不匹配就显式报错而不是返回空。
+  3. 默认值仍是历史行为（legacy），不显式设置就一切照旧。
+
+  legacy = chinese_clip(768d, 图) + bge-m3(1024d, 文本)，两个独立空间
+  wemm   = tencent/WeMM-Embedding-2B，文本/图像/视频**同一个 2048 维空间**
+
+旧的其它模型行仍保留在库里不删（避免误删/回溯），但检索与新建只认当前方案。
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+
+log = logging.getLogger(__name__)
+
+SCHEMES = {
+    "legacy": {
+        "image_embedder": "chinese_clip",
+        "text_embedder": "bge",
+        "image_model": "chinese-clip-ViT-L-14",
+        "text_model": "BAAI/bge-m3",
+        "unified": False,
+        "note": "历史方案：图文两个独立空间",
+    },
+    "wemm_visual": {
+        # 只把图片通道换成 WeMM，文本通道仍是 bge。
+        # 存在的意义：分阶段验证。图片向量和文本向量分布在不同的 space
+        # （visual vs semantic/episodic），各自内部自洽，所以混合不会错配；
+        # 但它不是"两个 env 各切各的"——它仍是一个具名方案，整体切换。
+        "image_embedder": "wemm",
+        "text_embedder": "bge",
+        "image_model": "tencent/WeMM-Embedding-2B",
+        "text_model": "BAAI/bge-m3",
+        "unified": False,
+        "note": "图片用 WeMM、文本仍用 bge：只重建视觉向量的中间态",
+    },
+    "wemm": {
+        "image_embedder": "wemm",
+        "text_embedder": "wemm",
+        "image_model": "tencent/WeMM-Embedding-2B",
+        "text_model": "tencent/WeMM-Embedding-2B",
+        "unified": True,
+        "note": "统一多模态空间：文本/图像/视频同空间，跨模态检索原生成立",
+    },
+}
+
+DEFAULT_SCHEME = "legacy"
+
+
+def _active_name() -> str:
+    name = str(os.getenv("SENTRIX_EMBEDDING_SCHEME", "") or "").strip().lower()
+    if not name:
+        return DEFAULT_SCHEME
+    if name not in SCHEMES:
+        log.error("未知的 SENTRIX_EMBEDDING_SCHEME=%r，回退到 %s", name, DEFAULT_SCHEME)
+        return DEFAULT_SCHEME
+    return name
+
+
+ACTIVE_SCHEME = _active_name()
+_ACTIVE = SCHEMES[ACTIVE_SCHEME]
+
+IMAGE_EMBEDDER = _ACTIVE["image_embedder"]
+TEXT_EMBEDDER = _ACTIVE["text_embedder"]
+IMAGE_MODEL = _ACTIVE["image_model"]
+TEXT_MODEL = _ACTIVE["text_model"]
+UNIFIED_SPACE = _ACTIVE["unified"]
+
+if ACTIVE_SCHEME != DEFAULT_SCHEME:
+    # 切方案必须重建索引，否则查询向量与库里向量不同源，检索会静默变差。
+    log.warning(
+        "检索方案 = %s（%s）。若该 scope 的向量不是用这套模型建的，"
+        "检索结果无效——请先跑重建：scripts/maintenance/rebuild_scope_vectors.py",
+        ACTIVE_SCHEME, _ACTIVE["note"],
+    )

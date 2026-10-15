@@ -1,0 +1,42 @@
+{
+  "model": "minicpm-v4.7-35b-a3b-q6-thinking",
+  "build_info": "b0-df18bee11e96557b07aa7b12db0976f3c7ac9165",
+  "chat_template_sha256": "e77b0c254a33f4812c599f3942d8bcde27b13bb1fda2008adbf1d90e4ad6f75f",
+  "context_limit": 262144,
+  "quantization": "Q6_K",
+  "kv": "f16",
+  "thinking": "server --reasoning on --reasoning-format deepseek",
+  "parallel": 1,
+  "models": {
+    "model_id": "OpenBMB/MiniCPM-V-4.7-35B-A3B-gguf",
+    "revision": "f244654312a11af8c31835ed51a4753a094310bc",
+    "verifiedUTC": "2026-10-14T08:59:59Z",
+    "model_dir": "models",
+    "files": [
+      {
+        "name": "MiniCPM-V-4_7-35B-A3B-Q6_K.gguf",
+        "source": "https://modelscope.cn/api/v1/models/OpenBMB/MiniCPM-V-4.7-35B-A3B-gguf/repo?Revision=f244654312a11af8c31835ed51a4753a094310bc&FilePath=MiniCPM-V-4_7-35B-A3B-Q6_K.gguf",
+        "revision": "f244654312a11af8c31835ed51a4753a094310bc",
+        "size": 28513556640,
+        "sha256": "fcbe98ad681730bc66828591c34761c2c266d54d4ffe7c0ae35e54e3ee7b4343",
+        "verifiedUTC": "2026-10-14T08:59:59Z"
+      },
+      {
+        "name": "mmproj-model-f16.gguf",
+        "source": "https://modelscope.cn/api/v1/models/OpenBMB/MiniCPM-V-4.7-35B-A3B-gguf/repo?Revision=f244654312a11af8c31835ed51a4753a094310bc&FilePath=mmproj-model-f16.gguf",
+        "revision": "f244654312a11af8c31835ed51a4753a094310bc",
+        "size": 1119575840,
+        "sha256": "bff3b688e14c300eca273092c37c50a0ddfcc2054e079af1a0480edeed5d20f1",
+        "verifiedUTC": "2026-10-14T08:59:59Z"
+      }
+    ]
+  },
+  "request_timeout_s": 600,
+  "turn_deadline_s": 1200,
+  "weight_verification": {
+    "status": "passed",
+    "observed_at": "2026-10-15T02:30:35.417141+00:00",
+    "method": "sha256sum of both actual remote files",
+    "server_script_sha256": "7a4a3b60846f2ca8d007aa480484dda1f90bd5c4817c85aff95100bfb1626ab7"
+  }
+}

@@ -1,0 +1,238 @@
+"""用当前方案重嵌某个 scope 的文本向量（observation 画像 + event 摘要）。
+
+为什么需要：全量换用 WeMM 后，text_ann 通道的查询向量来自 WeMM，而库里
+semantic/episodic 空间的旧向量是 bge 的——visual_ann.py / text_ann.py 都只按
+model_name 取向量，取不到就整条通道返回空。所以切方案必须重建。
+
+重建文本从库里取回，必须**逐字段复刻当初真正嵌的那条路径**。图片有两条写入路径，
+拼法不同，选错会让重建失真到中位余弦 0.968：
+
+  prepare_semantic_image / _commit_semantic_image (pipeline.py:552)
+      caption + activity + place + ocr_text + objects + visible_details   ← 本 scope 走的
+  _commit_fast_image (pipeline.py:351)
+      caption + activity + place + ocr_text + transcript + clothing + facts + visible_details
+      ——但 fast 路径其实只写 visual 向量，不写文本向量，所以走不到这里
+
+判别方法是拿库里的旧 bge 向量当基准重嵌比余弦（scripts/maintenance/fidelity2.py）：
+用 552 拼法 344 条里 284 条余弦精确 1.0，用 351 拼法只有 10 条。
+
+旧模型的向量不删（memory_vectors 唯一键含 model_name）。
+
+用法：
+  .venv/bin/python scripts/maintenance/rebuild_scope_text_vectors.py --scope album_xxx            # dry-run
+  .venv/bin/python scripts/maintenance/rebuild_scope_text_vectors.py --scope album_xxx --apply
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from backend.db import MemoryStore                      # noqa: E402
+from backend.embeddings import scheme                   # noqa: E402
+
+
+def build_text_embedder(scheme_name: str):
+    cfg = scheme.SCHEMES.get(scheme_name)
+    if not cfg:
+        raise SystemExit(f"未知方案: {scheme_name}（可选 {sorted(scheme.SCHEMES)}）")
+    kind = cfg["text_embedder"]
+    if kind == "wemm":
+        from backend.embeddings.wemm_sidecar import WeMMSidecarEmbedder
+        return WeMMSidecarEmbedder(), cfg["text_model"]
+    if kind == "bge":
+        from backend.embeddings.bge_text import BgeM3TextQueryEmbedder
+        return BgeM3TextQueryEmbedder(), cfg["text_model"]
+    raise SystemExit(f"方案 {scheme_name} 的 text_embedder={kind!r} 不支持重建文本向量")
+
+
+def _json_list(value):
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _json_dict(value):
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _object_text(value) -> str:
+    """复刻 pipeline.py:514 的 object_text()——objects 是这条拼法里信息量仅次于
+    caption 的字段（本 scope 286/352 非空），漏掉它正是上一版重建失真的原因。"""
+    parts = []
+    for item in _json_list(value):
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict):
+            parts.append(" ".join(
+                str(item.get(key, "")) for key in ("label", "primary", "details") if item.get(key)
+            ))
+        else:
+            parts.append(str(item))
+    return " ".join(p for p in parts if p)
+
+
+def observation_text(row) -> str:
+    """复刻 pipeline.py:552（prepare_semantic_image）的拼接。"""
+    detail = _json_dict(row["detail_json"])
+    details = " ".join(
+        (str(d.get("text") or d.get("label") or "") if isinstance(d, dict) else str(d))
+        for d in (detail.get("visible_details") or [])
+    )
+    return " ".join(filter(None, [
+        row["caption"], row["activity"], row["place"], row["ocr_text"],
+        _object_text(row["objects_json"]), details,
+    ])).strip()
+
+
+def event_text(row, columns) -> str:
+    def get(name):
+        return row[name] if name in columns else ""
+    return " ".join(filter(None, [get("title"), get("event_type"), get("activity"), get("summary")])).strip()
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--scope", required=True)
+    parser.add_argument("--scheme", default=None)
+    parser.add_argument("--db", default=os.getenv("SENTRIX_DB_PATH", "data/sentrix.db"))
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--limit", type=int, default=0)
+    args = parser.parse_args(argv)
+
+    scheme_name = (args.scheme or scheme.ACTIVE_SCHEME).lower()
+    embedder, model_name = build_text_embedder(scheme_name)
+    if not getattr(embedder, "available", True):
+        raise SystemExit(f"嵌入器不可用（model={model_name}）")
+
+    store = MemoryStore(args.db)
+    con = store.connection
+    con.row_factory = __import__("sqlite3").Row
+
+    obs = con.execute("SELECT * FROM observations WHERE scope_id=?", (args.scope,)).fetchall()
+    ev_cols = {r[1] for r in con.execute("PRAGMA table_info(events)").fetchall()}
+    evs = con.execute("SELECT * FROM events WHERE scope_id=?", (args.scope,)).fetchall()
+
+    done = {
+        (row["space"], row["source_type"], row["source_id"])
+        for row in con.execute(
+            "SELECT space, source_type, source_id FROM memory_vectors "
+            "WHERE scope_id=? AND model_name=? AND space IN ('semantic','episodic')",
+            (args.scope, model_name)).fetchall()
+    }
+
+    # 空文本也要嵌：当初 bge 对空文本同样写了向量（sidecar 返回 "" 的 1024 维向量），
+    # 跳过会让这些 observation 在 WeMM 下少一条候选，和新方案对比就不是同一组数据了。
+    obs_jobs, ev_jobs, empty_text = [], [], 0
+    for r in obs:
+        text = observation_text(r)
+        if not text:
+            empty_text += 1
+        obs_jobs.append((r["id"], text))
+    for r in evs:
+        text = event_text(r, ev_cols)
+        if not text:
+            empty_text += 1
+        ev_jobs.append((r["id"], text))
+    if args.limit:
+        obs_jobs, ev_jobs = obs_jobs[:args.limit], ev_jobs[:args.limit]
+
+    print(f"scope    : {args.scope}")
+    print(f"方案     : {scheme_name}  →  模型 {model_name}")
+    print(f"observation {len(obs)} 条 → 待嵌 {len(obs_jobs)}")
+    print(f"event       {len(evs)} 条 → 待嵌 {len(ev_jobs)}")
+    print(f"文本为空但仍嵌入 {empty_text} 条")
+    print(f"已有该模型向量 {len(done)} 条（会跳过）")
+    if not args.apply:
+        print("\nDRY-RUN：加 --apply 才会写入。")
+        return 0
+
+    added = failed = 0
+    t0 = time.perf_counter()
+    for index, (oid, text) in enumerate(obs_jobs, 1):
+        try:
+            vec = embedder.embed_query(text)
+            if not vec:
+                failed += 1
+            else:
+                meta = {"asset_id": None, "source": "rebuild_scope_text_vectors"}
+                # 保留原本的 asset_id 关联（text_ann 靠它把 observation 映射回资产）
+                row = con.execute("SELECT asset_id FROM observations WHERE id=?", (oid,)).fetchone()
+                meta["asset_id"] = row["asset_id"] if row else None
+                store.upsert_vector("semantic", "observation", oid, vec, model_name, meta)
+                store.upsert_vector("episodic", "observation", oid, vec, model_name, meta)
+                added += 1
+        except Exception as exc:
+            failed += 1
+            if added == 0 and failed == 1:
+                raise
+            print(f"  observation {oid} 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if index % 50 == 0 or index == len(obs_jobs):
+            print(f"  observation {index}/{len(obs_jobs)}  写入 {added} 失败 {failed}", flush=True)
+
+    for index, (eid, text) in enumerate(ev_jobs, 1):
+        try:
+            vec = embedder.embed_query(text)
+            if not vec:
+                failed += 1
+            else:
+                store.upsert_vector("episodic", "event", eid, vec, model_name,
+                                    {"source": "rebuild_scope_text_vectors"})
+                added += 1
+        except Exception as exc:
+            failed += 1
+            print(f"  event {eid} 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if index % 50 == 0 or index == len(ev_jobs):
+            print(f"  event {index}/{len(ev_jobs)}  写入 {added} 失败 {failed}", flush=True)
+
+    # field_desc：原文存在旧向量的 metadata.text 里，可以逐字重建（无保真度损失）。
+    # 注意该空间目前只写不读（data/ann 下没有 field_desc.hnsw，text_ann 也不搜它），
+    # 但为了"全流程只用一个嵌入模型"仍要统一，否则库里会混着两套模型的向量。
+    fd_rows = con.execute(
+        "SELECT source_id, metadata_json FROM memory_vectors "
+        "WHERE scope_id=? AND space='field_desc' AND source_type='asset' AND model_name<>?",
+        (args.scope, model_name)).fetchall()
+    fd_jobs = []
+    for r in fd_rows:
+        try:
+            text = (json.loads(r["metadata_json"] or "{}") or {}).get("text") or ""
+        except (TypeError, ValueError):
+            text = ""
+        if text.strip():
+            fd_jobs.append((r["source_id"], text))
+    if args.limit:
+        fd_jobs = fd_jobs[:args.limit]
+    print(f"field_desc  {len(fd_rows)} 条 → 待嵌 {len(fd_jobs)}（从 metadata.text 逐字重建）", flush=True)
+    for index, (aid, text) in enumerate(fd_jobs, 1):
+        try:
+            vec = embedder.embed_query(text)
+            if not vec:
+                failed += 1
+            else:
+                store.upsert_vector("field_desc", "asset", aid, vec, model_name,
+                                    {"source": "rebuild_scope_text_vectors", "text": text})
+                added += 1
+        except Exception as exc:
+            failed += 1
+            print(f"  field_desc {aid} 失败: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if index % 100 == 0 or index == len(fd_jobs):
+            print(f"  field_desc {index}/{len(fd_jobs)}  写入 {added} 失败 {failed}", flush=True)
+
+    print(f"\n完成：写入 {added} 失败 {failed} 耗时 {time.perf_counter()-t0:.1f}s")
+    print(f"校验： .venv/bin/python -m backend.embeddings.consistency --scope {args.scope} --scheme {scheme_name}")
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

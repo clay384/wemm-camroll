@@ -1,0 +1,47 @@
+#!/bin/bash
+# 启动 / 重启 WeMM 嵌入 sidecar（8102）。
+#
+# 为什么要单独一个脚本而不是随手 nohup：
+#   下面两个环境变量是实测调出来的，随手启动会丢掉，而丢掉之后现象很隐蔽——
+#   显存悄悄多占 1.5GB、短文本嵌入慢 3~7 倍，但结果看不出错。
+#
+# PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+#   缓存分配器默认按固定块预留，碎片还不了驱动。实测 reserved 从 9886MiB 降到
+#   8392MiB（激活峰值不变），即省下约 1.5GB。不影响数值。
+#
+# 依赖 flash-linear-attention（.venv-wemm 内已装）
+#   Qwen3.5 是 18 层线性注意力 + 6 层全注意力的混合结构，没装 fla 时 gated delta
+#   rule 走纯 torch 回退。装上后文本嵌入快 3~7 倍、小图快 3 倍，大图（1.6 万 token）
+#   只快 1.1 倍——大图的瓶颈是全注意力层和激活，不是线性注意力。
+#   实测前后嵌入余弦 0.99991~0.99994（bf16 舍入级），可安全替换。
+#
+# 未装 causal-conv1d：PyPI 上只有源码包，编译需要与 torch(cu130) 匹配的 CUDA 13
+#   toolkit（机器上只有 12.x），会以 CUDA_MISMATCH 失败。收益也小——它只负责
+#   conv1d 那一步，torch 回退（F.silu(self.conv1d(x))）开销可以忽略。
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+
+PORT="${SENTRIX_WEMM_PORT:-8102}"
+OLD=$(pgrep -f 'wemm_embedder_sidecar' | head -1 || true)
+if [ -n "${OLD:-}" ]; then
+  kill "$OLD" 2>/dev/null || true
+  for _ in $(seq 1 30); do
+    ss -lnt 2>/dev/null | grep -q ":${PORT} " || break
+    sleep 1
+  done
+fi
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+nohup .venv-wemm/bin/python scripts/maintenance/wemm_embedder_sidecar.py \
+  --port "$PORT" --host 127.0.0.1 > /tmp/wemm_sidecar.log 2>&1 &
+
+for i in $(seq 1 120); do
+  if curl -s -m 3 "http://127.0.0.1:${PORT}/health" 2>/dev/null | grep -q '"ok"'; then
+    echo "WeMM sidecar ready on :${PORT} after ${i}s (pid $(pgrep -f wemm_embedder_sidecar | head -1))"
+    exit 0
+  fi
+  sleep 1
+done
+echo "启动超时，日志尾部："
+tail -20 /tmp/wemm_sidecar.log
+exit 1

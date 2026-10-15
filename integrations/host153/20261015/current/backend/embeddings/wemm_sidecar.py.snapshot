@@ -1,0 +1,321 @@
+"""WeMM-Embedding-2B 适配器 —— 同时充当 visual 槽和 text 槽。
+
+与现有两条链路的关键差异：**这是一个统一空间**。
+
+  chinese_clip (768d, 图) 和 bge-m3 (1024d, 文本) 是两个互不相干的空间，
+  「文本查图」靠 CLIP 文本塔去对齐图像空间；bge 那套只能查文本。
+  WeMM 把文本、图像、视频放进同一个 2048 维空间，查询与候选直接可比。
+
+因此本类同时实现 ``VisualQueryEmbedder`` 和 ``TextQueryEmbedder`` 两个协议，
+两个槽位指向同一个模型实例。
+
+两个后端（``SENTRIX_WEMM_BACKEND``）：
+
+  sidecar（默认）  模型跑在独立 venv（.venv-wemm）后的 HTTP sidecar 上（8102）。
+                   WeMM 需要 transformers==5.2.0，而 8091 的 .venv 是 5.11.0 且与
+                   torch 已不兼容，不能混装，所以隔离成独立进程。
+  vllm             vLLM 的 pooling 模式（8105），配 ``--quantization fp8`` 可把权重
+                   从 4.25 GiB 压到 2.67 GiB（3090 无原生 FP8，vLLM 走 Marlin
+                   weight-only 路径，权重在显存里保持 FP8）。
+                   实测：文本余弦 0.9987、图像 0.992~0.996，串行 17.8ms、批量 332 req/s。
+
+**EXIF 朝向必须由本层统一处理**（``SENTRIX_WEMM_APPLY_EXIF``，默认开）：
+
+  实测两条链路的朝向约定不一致——llama.cpp（captioner）用的 stb_image 不处理 EXIF，
+  qwen_vl_utils（sidecar）的 PIL 也不处理，而 vLLM 会处理。相册里 **49% 的图**
+  带非正常 EXIF 朝向，于是同一张图在 vLLM 和 sidecar 下会差 90°，余弦掉到 0.94。
+  这不是计算差异，是「谁转了」的约定差异。
+
+  在客户端先 ``exif_transpose`` 再喂给任一后端，两边就都看到同一张（正确朝向的）图。
+  代价：**开启后历史图像向量会变**，与旧索引不再同空间——切换前必须重建图像向量，
+  或临时置 0 以维持旧口径。
+
+关于失败可见性：chinese_clip 适配器的注释记了一次事故——静默返回空向量时调用方
+照样 upsert，223 张图连着好几周没有视觉向量而无人察觉。所以这里沿用 bge 的熔断器
+并保留 ``status()``，同时在失败时写日志。
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+import logging
+import os
+import tempfile
+import time
+
+try:
+    import httpx
+except Exception:  # pragma: no cover - optional dependency
+    httpx = None
+
+log = logging.getLogger(__name__)
+
+_DEFAULT_URL = os.getenv("SENTRIX_WEMM_URL", "http://127.0.0.1:8102")
+_DEFAULT_VLLM_URL = os.getenv("SENTRIX_WEMM_VLLM_URL", "http://127.0.0.1:8105")
+_DEFAULT_MODEL = "tencent/WeMM-Embedding-2B"
+# vLLM 按「vllm serve 时给的模型路径」注册服务名；发别的名字会被判为未知模型并返回
+# 404（不是 400），排查时容易误判成端点不存在。所以单独一个变量。
+_DEFAULT_VLLM_MODEL = os.getenv("SENTRIX_WEMM_VLLM_MODEL",
+                                "/home/asus/models/WeMM-Embedding-2B")
+_FULL_DIMENSION = 2048
+_BACKENDS = ("sidecar", "vllm")
+
+
+def _configured_backend() -> str:
+    raw = str(os.getenv("SENTRIX_WEMM_BACKEND", "") or "").strip().lower()
+    if not raw:
+        return "sidecar"
+    if raw not in _BACKENDS:
+        log.error("未知的 SENTRIX_WEMM_BACKEND=%r，回退到 sidecar", raw)
+        return "sidecar"
+    return raw
+
+
+def _apply_exif() -> bool:
+    """默认开。置 0 可回到「不转 EXIF」的旧口径，让历史向量继续可用。"""
+    return str(os.getenv("SENTRIX_WEMM_APPLY_EXIF", "1") or "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _configured_dimension() -> int:
+    """MRL 截断维度。0/空表示用原生 2048。"""
+    raw = str(os.getenv("SENTRIX_WEMM_TRUNCATE_DIM", "") or "").strip()
+    if not raw:
+        return _FULL_DIMENSION
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("SENTRIX_WEMM_TRUNCATE_DIM 不是整数，忽略: %r", raw)
+        return _FULL_DIMENSION
+    return value if value > 0 else _FULL_DIMENSION
+
+
+def _truncate_and_normalize(vector: list[float], dim: int) -> list[float]:
+    """MRL 截断后必须重新归一化——截断会破坏单位长度。
+
+    在客户端统一做，两个后端的截断语义就一致了（vLLM 的 dimensions 参数
+    对 pooling 模型未必生效，交给它反而多一处不可控差异）。
+    """
+    if not vector:
+        return []
+    values = [float(v) for v in vector]
+    if dim and 0 < dim < len(values):
+        values = values[:dim]
+    norm = sum(v * v for v in values) ** 0.5
+    if norm <= 0:
+        return values
+    return [v / norm for v in values]
+
+
+class WeMMSidecarEmbedder:
+    def __init__(self, model_id: str | None = None, base_url: str | None = None,
+                 backend: str | None = None):
+        self._backend = (backend or _configured_backend()).lower()
+        self._model_id = model_id or os.getenv("SENTRIX_WEMM_MODEL", _DEFAULT_MODEL)
+        # 发给后端的名字与本地标签不是一回事：vLLM 认服务名，sidecar 忽略这个字段
+        self._served_name = (os.getenv("SENTRIX_WEMM_VLLM_MODEL", _DEFAULT_VLLM_MODEL)
+                             if self._backend == "vllm" else self._model_id)
+        if base_url:
+            self._base_url = base_url.rstrip("/")
+        elif self._backend == "vllm":
+            self._base_url = _DEFAULT_VLLM_URL.rstrip("/")
+        else:
+            self._base_url = _DEFAULT_URL.rstrip("/")
+        self._timeout = float(os.getenv("SENTRIX_WEMM_TIMEOUT", "60"))
+        self._truncate_dim = _configured_dimension()
+        self._apply_exif = _apply_exif()
+        self._failures = 0
+        self._tripped_at = 0.0
+        self._health_checked_at = 0.0
+        self._health_value = False
+        self._health_ttl = float(os.getenv("SENTRIX_WEMM_HEALTH_TTL", "10"))
+
+    @property
+    def model_id(self):
+        return self._model_id
+
+    @property
+    def backend(self):
+        return self._backend
+
+    @property
+    def dimension(self):
+        return self._truncate_dim
+
+    @property
+    def circuit_open(self):
+        return bool(self._tripped_at and time.monotonic() - self._tripped_at < 30.0)
+
+    def status(self) -> dict:
+        """暴露后端健康与熔断状态，供检索诊断使用。"""
+        return {
+            "configured": True,
+            "available": bool(self.available),
+            "backend": self._backend,
+            "base_url": self._base_url,
+            "model_id": self.model_id,
+            "served_name": self._served_name,
+            "dimension": self.dimension,
+            "apply_exif": self._apply_exif,
+            "truncate_dim": self._truncate_dim if self._truncate_dim != _FULL_DIMENSION else None,
+            "consecutive_failures": self._failures,
+            "circuit_open": self.circuit_open,
+        }
+
+    @property
+    def available(self):
+        if httpx is None:
+            return False
+        if self.circuit_open:
+            return False
+        now = time.monotonic()
+        if now - self._health_checked_at < self._health_ttl:
+            return self._health_value
+        try:
+            # vLLM 的 /health 返回 200 但 body 为空，所以只看状态码不看内容。
+            response = httpx.get(f"{self._base_url}/health", timeout=5)
+            self._health_checked_at = now
+            self._health_value = response.status_code == 200
+        except Exception:
+            self._health_checked_at = now
+            self._health_value = False
+        return self._health_value
+
+    def _record_failure(self, what: str, error: Exception):
+        self._failures += 1
+        self._health_value = False
+        self._health_checked_at = 0.0
+        log.warning("WeMM %s 失败（连续 %d 次）: %s", what, self._failures, error)
+        if self._failures >= 5:
+            self._tripped_at = time.monotonic()
+            self._failures = 0
+
+    def _record_success(self):
+        self._failures = 0
+        self._tripped_at = 0.0
+        self._health_value = True
+        self._health_checked_at = time.monotonic()
+
+    def _call(self, method: str, payload: dict, what: str):
+        if httpx is None:
+            return None
+        if self.circuit_open:
+            return None
+        try:
+            response = httpx.post(f"{self._base_url}{method}", json=payload,
+                                  timeout=self._timeout)
+            response.raise_for_status()
+            data = response.json()
+            self._record_success()
+            return data
+        except Exception as error:
+            self._record_failure(what, error)
+            return None
+
+    # ---------------------------------------------------------------- 文本
+    def _text_payload(self, text: str) -> tuple[str, dict]:
+        text = str(text or "")
+        if self._backend == "vllm":
+            # vLLM 的 processor 后处理会自动追加 <embedding>，所以这里只给到
+            # <|im_end|> 为止。发裸文本余弦只有 0.67，多发一个 <embedding>
+            # 会变成两个（0.988）——只有这个形式是 0.9999。
+            return "/v1/embeddings", {
+                "model": self._served_name,
+                "input": f"<|im_start|>user\n{text}<|im_end|>",
+            }
+        body = {"text": text}
+        if self._truncate_dim != _FULL_DIMENSION:
+            body["truncate_dim"] = self._truncate_dim
+        return "/embed_text", body
+
+    def _text_vector(self, data: dict) -> list[float]:
+        if self._backend == "vllm":
+            rows = data.get("data") or []
+            return rows[0].get("embedding") if rows else []
+        return data.get("vector") or []
+
+    def embed_query(self, text: str) -> list[float]:
+        path, payload = self._text_payload(text)
+        data = self._call(path, payload, "embed_text")
+        if not data:
+            return []
+        return _truncate_and_normalize(self._text_vector(data), self._truncate_dim)
+
+    # ---------------------------------------------------------------- 图像
+    def _prepare_image(self, path: str) -> tuple[str | None, bytes | None]:
+        """按 EXIF 正过来，返回 (临时文件路径, 原始字节)。
+
+        临时文件给 sidecar（它收路径），字节给 vLLM（它收 base64）。
+        没开 EXIF 时不产生临时文件，直接把原路径给 sidecar。
+        """
+        path = str(path or "")
+        if not path:
+            return None, None
+        if not self._apply_exif:
+            return path, None
+        try:
+            from PIL import Image, ImageOps
+        except Exception:
+            log.warning("PIL 不可用，跳过 EXIF 校正")
+            return path, None
+        try:
+            with Image.open(path) as source:
+                oriented = ImageOps.exif_transpose(source)
+                if oriented is None:
+                    return path, None
+                if oriented.size == source.size and not source.getexif().get(274):
+                    # 本来就是正朝向，不必落临时文件
+                    return path, None
+                buffer = io.BytesIO()
+                oriented.convert("RGB").save(buffer, format="JPEG", quality=95)
+            raw = buffer.getvalue()
+            handle = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            handle.write(raw)
+            handle.close()
+            return handle.name, raw
+        except Exception as error:
+            log.warning("EXIF 校正失败，改用原图 %s: %s", path, error)
+            return path, None
+
+    def _image_payload(self, tmp_path: str | None, raw: bytes | None) -> tuple[str, dict]:
+        if self._backend == "vllm":
+            encoded = base64.b64encode(raw).decode() if raw else None
+            if encoded is None:
+                # 没走到 EXIF 分支时（未开启/无需校正），vLLM 仍需要字节
+                with open(tmp_path, "rb") as handle:
+                    encoded = base64.b64encode(handle.read()).decode()
+            return "/v1/embeddings", {
+                "model": self._served_name,
+                "messages": [{"role": "user", "content": [
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}}]}],
+            }
+        body = {"path": tmp_path}
+        if self._truncate_dim != _FULL_DIMENSION:
+            body["truncate_dim"] = self._truncate_dim
+        return "/embed_image", body
+
+    def _image_vector(self, data: dict) -> list[float]:
+        if self._backend == "vllm":
+            rows = data.get("data") or []
+            return rows[0].get("embedding") if rows else []
+        return data.get("vector") or []
+
+    def embed_image(self, path: str) -> list[float]:
+        tmp_path, raw = self._prepare_image(path)
+        if not tmp_path:
+            return []
+        created = tmp_path != str(path or "")
+        try:
+            endpoint, payload = self._image_payload(tmp_path, raw)
+            data = self._call(endpoint, payload, "embed_image")
+            if not data:
+                return []
+            return _truncate_and_normalize(self._image_vector(data), self._truncate_dim)
+        finally:
+            if created:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass

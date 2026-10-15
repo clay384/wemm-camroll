@@ -250,6 +250,8 @@ class BudgetLedger:
             "total_tokens", "cached_tokens", "error_code", "elapsed_s", "stream",
             "pricing_version", "input_rate", "output_rate", "usage_missing",
             "request_id",
+            "provider", "reasoning_tokens", "image_tokens", "created_cache_tokens",
+            "decision_mode", "json_mode",
         }
         clean = {k: v for k, v in (metadata or {}).items()
                  if k in allowed and (v is None or isinstance(v, (str, int, float, bool)))}
@@ -403,7 +405,16 @@ class RequestJournal:
             if cursor.rowcount != 1:
                 raise RequestUncertain("Only a pending request can be completed")
 
-    def fail(self, request_id: str, error_code: str, *, uncertain: bool = False) -> None:
+    def fail(self, request_id: str, error_code: str, *, uncertain: bool = False,
+             failure_details: dict | None = None) -> None:
+        """Optionally retain caller-redacted failure evidence for a new request.
+
+        Existing callers keep their original behavior. A completed response is
+        never replaced, and already failed/uncertain historical rows stay fixed.
+        """
+        if failure_details is not None and not isinstance(failure_details, dict):
+            raise TypeError("failure_details must be a redacted dictionary")
+        response = json.dumps({"_failure": failure_details}, ensure_ascii=False) if failure_details is not None else None
         with self._connect() as conn:
-            conn.execute("UPDATE cloud_requests SET status=?,error_code=? WHERE request_id=? AND (status='pending' OR (status='completed' AND ?))",
-                         ("uncertain" if uncertain else "failed", error_code[:100], request_id, uncertain))
+            conn.execute("UPDATE cloud_requests SET status=?,error_code=?,response=COALESCE(response,?) WHERE request_id=? AND (status='pending' OR (status='completed' AND ?))",
+                         ("uncertain" if uncertain else "failed", error_code[:100], response, request_id, uncertain))

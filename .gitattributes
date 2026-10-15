@@ -1,0 +1,4 @@
+
+# Preserve archived remote source bytes and literal unified-diff context lines.
+integrations/host153/20261015/**/*.snapshot -text
+integrations/host153/20261015/tracked-changes.patch -text -whitespace

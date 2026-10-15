@@ -1,8 +1,10 @@
 # WeMM + CamRoll 工作约定
 
+- 最新源码恢复版本：`architecture/2026-10-15-v1`，恢复入口`docs/RESTORE_20261015.md`。`integrations/host153/`只作原样源码存证，不能直接执行其中旧运维脚本。Q6验收25/30，3题与100题未启动。
+
 - 2026-10-14最新接手文档：docs/PROJECT_HANDOFF_20261014.md。当前采用Gate-Off（WeMM + qwen3.7-flash + M4），保留基础校验、既有修复、最终复核和Doubao最终评分；新增事实Gate/统一修复默认关闭。历史On与全部冻结结果保留，不自动续跑旧四组；8774只读页展示采用方案不等于问答服务已运行。
 
-本仓库是两个既有项目的独立源码备份与后续开发仓库。先读 README.md、docs/ARCHITECTURE_CURRENT.md、docs/CODE_MAP.md 和 docs/releases/2026-10-07-architecture-v1.md。RESTORE.md 与 baseline/source_manifest.json 只针对对应的2026-09-16基线；`docs/project/` 是原样保存的历史交接及方案，当前用户授权优先于历史记录。
+本仓库是两个既有项目的独立源码备份与后续开发仓库。先读 README.md、docs/ARCHITECTURE_CURRENT.md、docs/CODE_MAP.md 和 docs/releases/2026-10-15-architecture-v1.md。RESTORE.md 与 baseline/source_manifest.json 只针对对应的2026-09-16基线；`docs/project/` 是原样保存的历史交接及方案，当前用户授权优先于历史记录。
 
 - 云端初次阅读见 docs/CLOUD_READING.md；读取架构不需要权重或私人运行数据。不要为理解项目而直接运行付费、建库或部署入口。
 - 当前Flash Gate仅含3.7/3.8 Flash，原600元累计账本不自动提额。2026-10-07最新实验未完整交付；架构版本发布不改变冻结模型、提示、评分、停止规则或任何旧结果。

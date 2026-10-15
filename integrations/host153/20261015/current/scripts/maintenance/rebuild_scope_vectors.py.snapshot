@@ -1,0 +1,143 @@
+"""用指定检索方案重嵌某个 scope 的图片向量。
+
+为什么需要它：换嵌入模型后，库里旧模型的向量对新查询毫无用处——查询向量与新模型
+同空间，而 ANN 只按 model_name 取向量（见 retrieval/visual_ann.py），取不到就整条
+视觉通道返回空。这不是"效果变差"，是"配置没生效"，所以每次切方案都必须重建。
+
+旧模型的向量**不删**：memory_vectors 的唯一键是
+(space, source_type, source_id, model_name)，换 model_name 只是新增一行，切回旧方案
+时旧向量仍在。这也正是 scheme.py 里"旧的其它模型行仍保留在库里不删"的由来。
+
+用法：
+  .venv/bin/python scripts/maintenance/rebuild_scope_vectors.py --scope album_xxx            # dry-run
+  .venv/bin/python scripts/maintenance/rebuild_scope_vectors.py --scope album_xxx --apply
+  .venv/bin/python scripts/maintenance/rebuild_scope_vectors.py --scope album_xxx --apply --scheme wemm
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from backend.db import MemoryStore                      # noqa: E402
+from backend.embeddings import scheme                   # noqa: E402
+
+
+def build_visual_embedder(scheme_name: str):
+    """按方案的 image_embedder 造出「能嵌图片」的对象，返回 (embedder, model_name)。"""
+    cfg = scheme.SCHEMES.get(scheme_name)
+    if not cfg:
+        raise SystemExit(f"未知方案: {scheme_name}（可选 {sorted(scheme.SCHEMES)}）")
+    kind = cfg["image_embedder"]
+    if kind == "wemm":
+        from backend.embeddings.wemm_sidecar import WeMMSidecarEmbedder
+        return WeMMSidecarEmbedder(), cfg["image_model"]
+    if kind == "chinese_clip":
+        from backend.embeddings.chinese_clip_visual import ChineseClipVisualEmbedder
+        return ChineseClipVisualEmbedder.shared(), cfg["image_model"]
+    raise SystemExit(f"方案 {scheme_name} 的 image_embedder={kind!r} 不支持重建图片向量")
+
+
+def keyframe_for(video_path: str) -> str | None:
+    """视频没有可直接喂给图像编码器的帧，退而取它已抽出的首个关键帧。"""
+    base = os.path.splitext(os.path.basename(video_path))[0]
+    for candidate in (
+        f"/home/asus/Github/Sentrix-Home-Web/data/derived/video/{base}/scenes/001/kf_0001.jpg",
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--scope", required=True)
+    parser.add_argument("--scheme", default=None,
+                        help=f"方案名，默认当前生效的 {scheme.ACTIVE_SCHEME}")
+    parser.add_argument("--db", default=os.getenv("SENTRIX_DB_PATH", "data/sentrix.db"))
+    parser.add_argument("--apply", action="store_true", help="不加就是 dry-run")
+    parser.add_argument("--limit", type=int, default=0, help="只处理前 N 个（试跑用）")
+    parser.add_argument("--include-video", action="store_true",
+                        help="视频用其首个关键帧参与嵌入")
+    args = parser.parse_args(argv)
+
+    scheme_name = (args.scheme or scheme.ACTIVE_SCHEME).lower()
+    embedder, model_name = build_visual_embedder(scheme_name)
+
+    if not getattr(embedder, "available", True):
+        raise SystemExit(f"嵌入器不可用（model={model_name}）——先确认 sidecar 起来了")
+
+    store = MemoryStore(args.db)
+    done = {
+        row["source_id"]
+        for row in store.connection.execute(
+            "SELECT source_id FROM memory_vectors WHERE scope_id=? AND space='visual' "
+            "AND source_type='asset' AND model_name=?",
+            (args.scope, model_name),
+        ).fetchall()
+    }
+    rows = store.connection.execute(
+        "SELECT id, path, media_type FROM assets WHERE scope_id=? ORDER BY id", (args.scope,)
+    ).fetchall()
+
+    todo, skipped_done, skipped_nopath, skipped_video = [], 0, 0, 0
+    for row in rows:
+        if row["id"] in done:
+            skipped_done += 1
+            continue
+        path = row["path"] or ""
+        if (row["media_type"] or "") == "video":
+            if not args.include_video:
+                skipped_video += 1
+                continue
+            path = keyframe_for(path) or ""
+        if not path or not os.path.isfile(path):
+            skipped_nopath += 1
+            continue
+        todo.append((row["id"], path))
+    if args.limit:
+        todo = todo[:args.limit]
+
+    print(f"scope      : {args.scope}")
+    print(f"方案       : {scheme_name}  →  模型 {model_name}")
+    print(f"资产总数   : {len(rows)}")
+    print(f"  已有该模型向量 : {skipped_done}")
+    print(f"  视频（跳过）   : {skipped_video}" + ("（--include-video 可纳入）" if skipped_video and not args.include_video else ""))
+    print(f"  路径不可读     : {skipped_nopath}")
+    print(f"  待重建         : {len(todo)}")
+    if not args.apply:
+        print("\nDRY-RUN：加 --apply 才会写入。")
+        return 0
+
+    added = failed = 0
+    started = time.perf_counter()
+    for index, (asset_id, path) in enumerate(todo, 1):
+        try:
+            vector = embedder.embed_image(path)
+            if not vector:
+                failed += 1
+            else:
+                store.upsert_vector("visual", "asset", asset_id, vector, model_name,
+                                    {"scope_id": args.scope})
+                added += 1
+        except Exception as exc:                      # 单张失败不该中断整批
+            failed += 1
+            if added == 0 and failed == 1:
+                raise
+            print(f"  [{index}] 失败 {asset_id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        if index % 25 == 0 or index == len(todo):
+            rate = index / max(1e-6, time.perf_counter() - started)
+            print(f"  {index}/{len(todo)}  已写入 {added}  失败 {failed}  {rate:.1f} 张/秒", flush=True)
+
+    elapsed = time.perf_counter() - started
+    print(f"\n完成：写入 {added}，失败 {failed}，耗时 {elapsed:.1f}s")
+    print(f"校验：.venv/bin/python -m backend.embeddings.consistency --scope {args.scope} --scheme {scheme_name}")
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

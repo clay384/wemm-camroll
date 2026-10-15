@@ -1,0 +1,157 @@
+"""Composition-root EmbeddingRouter.
+
+Owns the two independent embedder slots and exposes a single ``embed`` entry
+point for the retrieval layer.  Construction happens at the Application
+Composition Root (``app.py``); the Kernel and Agent only ever see this object.
+
+Selection comes from embeddings/scheme.py (one scheme for BOTH slots):
+  legacy = chinese_clip (visual) + bge (text)
+  wemm   = tencent/WeMM-Embedding-2B, one unified space for both slots
+
+A slot whose embedder is unavailable reports ``available=False`` and the
+corresponding ANN retriever skips with a trace reason — never a silent empty.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+
+
+class EmbeddingRouter:
+    def __init__(self, visual=None, text=None):
+        self.visual = visual
+        self.text = text
+        self._timing_events = []
+        # 统一空间（两个槽指向同一个模型）时，同一个 query 只需编码一次。
+        # legacy 下两个槽是两个不同模型，各自编码是必须的；WeMM 下则是同一向量，
+        # 重复调用只是白白多付一次 sidecar 往返（实测单次 100ms 量级）。
+        self._query_cache: tuple[str, list[float]] | None = None
+
+    @property
+    def unified_space(self) -> bool:
+        """两个槽是否同一个模型——决定能否共用一次查询编码。"""
+        return bool(self.visual is not None and self.visual is self.text)
+
+    def _encode_once(self, text: str, slot) -> list[float]:
+        """统一空间下缓存并复用同一次编码结果。"""
+        key = str(text or "")
+        if self._query_cache is not None and self._query_cache[0] == key:
+            return list(self._query_cache[1])
+        vector = slot.embed_query(key) or []
+        if vector:
+            self._query_cache = (key, list(vector))
+        return vector
+
+    @classmethod
+    def from_clip(cls, clip):
+        """Build with the LOCKED scheme (see embeddings/scheme.py).
+
+        历史上 IMAGE/TEXT 可被 env 切成 clip/chinese_clip/bge，导致向量/索引多套并存、
+        检索时好时坏。现钉死单一方案，不再读 env 选择：IMAGE=chinese_clip、TEXT=bge。
+        """
+        from . import scheme
+        image_kind = scheme.IMAGE_EMBEDDER
+        text_kind = scheme.TEXT_EMBEDDER
+        visual = None
+        wemm = None
+        if image_kind == "wemm" or text_kind == "wemm":
+            # 统一空间：一个模型同时服务两个槽，共用同一个实例，
+            # 避免两个 slot 各建一次模型（显存翻倍且两实例状态可能不一致）。
+            from .wemm_sidecar import WeMMSidecarEmbedder
+            wemm = WeMMSidecarEmbedder()
+        if image_kind == "wemm":
+            visual = wemm
+        elif image_kind == "chinese_clip":
+            from .chinese_clip_visual import ChineseClipVisualEmbedder
+            visual = ChineseClipVisualEmbedder.shared()
+        elif clip is not None:
+            from .clip_visual import ClipVisualQueryEmbedder
+            visual = ClipVisualQueryEmbedder(clip)
+        else:
+            raise ValueError(f"unknown SENTRIX_IMAGE_EMBEDDER: {image_kind}")
+        text = None
+        if text_kind == "wemm":
+            text = wemm
+        elif text_kind == "bge":
+            from .bge_text import BgeM3TextQueryEmbedder
+            text = BgeM3TextQueryEmbedder()
+        elif clip is not None:
+            from .clip_text import ClipTextQueryEmbedder
+            text = ClipTextQueryEmbedder(clip)
+        else:
+            text = None
+        return cls(visual=visual, text=text)
+
+    @property
+    def visual_available(self):
+        return bool(self.visual and getattr(self.visual, "available", False))
+
+    @property
+    def text_available(self):
+        return bool(self.text and getattr(self.text, "available", False))
+
+    def embed_visual(self, text: str) -> list[float]:
+        started = time.monotonic()
+        try:
+            if not self.visual_available:
+                return []
+            if self.unified_space:
+                return self._encode_once(text, self.visual)
+            return self.visual.embed_query(text) or []
+        finally:
+            self._timing_events.append({
+                "slot": "visual",
+                "latency_ms": round((time.monotonic() - started) * 1000, 1),
+            })
+
+    def embed_text(self, text: str) -> list[float]:
+        started = time.monotonic()
+        try:
+            if not self.text_available:
+                return []
+            if self.unified_space:
+                return self._encode_once(text, self.text)
+            return self.text.embed_query(text) or []
+        finally:
+            self._timing_events.append({
+                "slot": "text",
+                "latency_ms": round((time.monotonic() - started) * 1000, 1),
+            })
+
+    def get_and_clear_timing_events(self) -> list[dict]:
+        events = list(self._timing_events)
+        self._timing_events.clear()
+        return events
+
+    @staticmethod
+    def _slot_status(slot):
+        if slot is None:
+            return {"configured": False, "available": False}
+        status_fn = getattr(slot, "status", None)
+        if callable(status_fn):
+            try:
+                value = status_fn()
+                if isinstance(value, dict):
+                    return dict(value)
+            except Exception as exc:
+                return {"configured": True, "available": False,
+                        "status_error": f"{type(exc).__name__}: {exc}"}
+        try:
+            available = bool(getattr(slot, "available", False))
+        except Exception as exc:
+            return {"configured": True, "available": False,
+                    "status_error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "configured": True,
+            "available": available,
+            "model_id": getattr(slot, "model_id", None),
+            "dimension": getattr(slot, "dimension", None),
+        }
+
+    def status(self) -> dict:
+        """Return observable slot health without exposing model internals."""
+        return {
+            "visual": self._slot_status(self.visual),
+            "text": self._slot_status(self.text),
+        }

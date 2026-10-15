@@ -327,6 +327,37 @@ def validator_failure(value):
 
 
 class GateRunner(Runner):
+    # Default hooks preserve the frozen Flash protocol. Independent protocols
+    # override these without changing historical profiles or stopping rules.
+    protocol = PROTOCOL
+    run_mode = "gate_ab"
+    stream_model = True
+
+    def _profile(self, group):
+        return inference_config(group)
+
+    def _dataset(self, strict):
+        return Dataset(self.source, strict=strict)
+
+    def _validate_dataset(self, parent, dataset, integrity):
+        if parent.get("input_integrity") != integrity:
+            raise ValueError("Gate input dataset differs from the original frozen album")
+
+    def _capture_binding(self, dataset, expected_snapshot, strict):
+        return IndexBinding.capture(self._memory, self._parent_path,
+            expected_snapshot=expected_snapshot, expected_images=len(dataset.photos), strict_source=strict)
+
+    def _infrastructure_failure(self, value):
+        return infrastructure_failure(value)
+
+    def _failure_category(self, response, fatal, origin, checker_failure):
+        return ("infrastructure_failure" if fatal else "validator_failure" if checker_failure else
+                "model_contract_failure" if origin == "system_failure" else
+                "gate_exhausted" if origin == "gate_exhausted" else None)
+
+    def _summary(self, state):
+        return gate_summary(state)
+
     def __init__(self, *args, backend_factory=GateBackend, budget_ledger=None, **kwargs):
         super().__init__(*args, backend_factory=backend_factory, **kwargs)
         self._backend = None
@@ -362,7 +393,7 @@ class GateRunner(Runner):
         event = {**copy.deepcopy(event), "evaluation_context": copy.deepcopy(getattr(self._call_context, "value", {}))}
         with self._persist_lock:
             append_jsonl(self._path / filename, event)
-        fatal = infrastructure_failure(event)
+        fatal = self._infrastructure_failure(event)
         if fatal:
             self._stop(fatal)
 
@@ -405,7 +436,7 @@ class GateRunner(Runner):
             try:
                 response = agent.ask(definition["message"], history=history,
                     request_context={"run_id": run_id, "qa_id": row["qa_id"], "turn_index": index},
-                    structured_output=True, stream_model=True)
+                    structured_output=True, stream_model=self.stream_model)
                 response = asdict(response) if is_dataclass(response) else dict(response)
                 if response.get("index_version") != version:
                     response.update(origin="system_failure", error_code="index_binding_changed")
@@ -420,7 +451,7 @@ class GateRunner(Runner):
                     "origin": "system_failure", "index_version": version}
             raw_path = self._path / "turn_attempts" / safe_id(row["qa_id"]) / (str(index) + ".json")
             atomic_json(raw_path, {"context": self._call_context.value, "response": response})
-            fatal = infrastructure_failure(response)
+            fatal = self._infrastructure_failure(response)
             origin = response.get("origin")
             if origin not in {"model", "system_failure", "gate_exhausted"}:
                 origin, fatal = "system_failure", "configuration_changed"
@@ -428,9 +459,7 @@ class GateRunner(Runner):
             if origin == "model" and outcome not in {"answer", "clarify", "refuse"}:
                 origin = "system_failure"
             checker_failure = validator_failure(response) if origin == "system_failure" and not fatal else None
-            category = ("infrastructure_failure" if fatal else "validator_failure" if checker_failure else
-                        "model_contract_failure" if origin == "system_failure" else
-                        "gate_exhausted" if origin == "gate_exhausted" else None)
+            category = self._failure_category(response, fatal, origin, checker_failure)
             eligible = origin == "model" and not fatal
             if fatal:
                 origin = "system_failure"
@@ -533,7 +562,7 @@ class GateRunner(Runner):
                 record["judge_status"] = "completed" if valid_judgment(record) else "failed"
             except Exception as exc:
                 record.update(judge_status="failed", judge_error_type=type(exc).__name__)
-                fatal = infrastructure_failure({"error_type": type(exc).__name__, "error_code": getattr(exc, "code", None)})
+                fatal = self._infrastructure_failure({"error_type": type(exc).__name__, "error_code": getattr(exc, "code", None)})
                 if fatal:
                     self._stop(fatal)
             self._item(copy.deepcopy(item))
@@ -572,7 +601,7 @@ class GateRunner(Runner):
                     for turn in [next((value for value in observed.get(plan["qa_id"], {}).get("runtime_turns") or []
                         if value.get("index") == index), {})]]}
                 for plan in state["qa_plan"]]
-            state["summary"] = gate_summary(state)
+            state["summary"] = self._summary(state)
             if self._stop_reason:
                 state["stop_reason"] = self._stop_reason
             atomic_json(self._path / "run.json", state)
@@ -585,8 +614,8 @@ class GateRunner(Runner):
         writable, sampler = False, None
         began = time.monotonic()
         try:
-            profile = inference_config(group)
-            dataset = Dataset(self.source, strict=strict)
+            profile = self._profile(group)
+            dataset = self._dataset(strict)
             parent_root = Path(source_evaluation_root or self.root)
             self._parent_path = parent_root / "runs" / safe_id(source_run_id) / "run.json"
             self._memory = self.albums / safe_id(source_album_id)
@@ -600,8 +629,8 @@ class GateRunner(Runner):
             claim.chmod(0o600)
             self._path.mkdir(mode=0o700, parents=True)
             integrity = dataset.integrity()
-            self._state = {"run_id": run_id, "suite_id": suite_id, "system_id": "camroll_wemm", "mode": "gate_ab",
-                "protocol_label": PROTOCOL, "gate_summary_version": PROTOCOL, "formal_protocol": strict, "status": "preparing", "config": "M4",
+            self._state = {"run_id": run_id, "suite_id": suite_id, "system_id": "camroll_wemm", "mode": self.run_mode,
+                "protocol_label": self.protocol, "gate_summary_version": self.protocol, "formal_protocol": strict, "status": "preparing", "config": "M4",
                 "experiment": profile.group, "inference_config": profile.as_dict(), "inference_fingerprint": profile.fingerprint,
                 "qa_concurrency": 1, "judge_concurrency": 4, "created_at": now_iso(), "started_at": now_iso(),
                 "source_run_id": source_run_id, "album_id": source_album_id, "query_memory": str(self._memory),
@@ -617,16 +646,14 @@ class GateRunner(Runner):
                 "query_cache_policy": "fresh_run_client_no_persistent_query_cache_original_index_namespace_retained",
                 "code_revision": os.getenv("CAMROLL_RELEASE_REVISION", "unrecorded"),
                 "adapter_sha256": sha256(__file__), "gate_complete": False,
-                "metric_source": {"protocol": PROTOCOL, "quality_denominator": len(dataset.rows)}}
+                "metric_source": {"protocol": self.protocol, "quality_denominator": len(dataset.rows)}}
             writable = True
             atomic_json(self._path / "questions.json", dataset.rows)
             atomic_json(self._path / "input_integrity.json", integrity)
             self._save()
             parent = read_json(self._parent_path)
-            if parent.get("input_integrity") != integrity:
-                raise ValueError("Gate input dataset differs from the original frozen album")
-            self._binding = IndexBinding.capture(self._memory, self._parent_path,
-                expected_snapshot=expected_snapshot, expected_images=len(dataset.photos), strict_source=strict)
+            self._validate_dataset(parent, dataset, integrity)
+            self._binding = self._capture_binding(dataset, expected_snapshot, strict)
             if self._binding.source_run_id != source_run_id:
                 raise ValueError("Source run identity does not match its requested directory")
             media, metadata = snapshot_media(self._memory, self._binding.snapshot_version)

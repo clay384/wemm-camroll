@@ -1,0 +1,145 @@
+"""查询向量与库中向量的一致性校验。
+
+为什么需要这个模块：``memory_vectors`` 的唯一约束是
+``(space, source_type, source_id, model_name)``，**同一个资产的向量可以有多套模型
+的副本并存**。实测 153 上就有 9 种 (model_name, space) 组合、84,649 条向量，光
+``visual`` 空间就放着 chinese-clip / ViT-B-32 / buffalo_l / adaface 四个模型的向量。
+
+这带来一个不会报错的失败模式：**切了检索方案但没重建索引**时，查询用新模型编码，
+而库里只有旧模型的向量——ANN 查不到任何东西，返回空集合，于是「检索变差」看起来
+只是分数低，而不是「配置错了」。scheme.py 开头记的那次事故就是这个形状。
+
+本模块把这件事变成显式检查：
+  - ``scope_coverage`` 告诉你某个 scope 里各 space 实际有哪些模型的向量；
+  - ``assert_ready`` 在方案与数据不匹配时**抛错**，而不是让检索悄悄返回空。
+
+用法（命令行）：
+  .venv/bin/python -m backend.embeddings.consistency --scope album_xxx
+  .venv/bin/python -m backend.embeddings.consistency --scope album_xxx --scheme wemm
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+
+from . import scheme
+
+# space → 该 space 由方案里的哪个模型负责。
+# 注意 visual 空间里还住着人脸模型（buffalo_l / adaface），它们不参与检索，
+# 所以这里只声明检索相关的那个，校验时也只比对它。
+SPACE_ROLE = {
+    "visual": "image_model",       # 图片/资产向量，供文本查图
+    "episodic": "text_model",      # 情节文本
+    "semantic": "text_model",      # 语义文本
+    "field_desc": "text_model",    # 字段描述
+}
+RETRIEVAL_SPACES = tuple(SPACE_ROLE)
+
+
+def expected_models(scheme_name: str | None = None) -> dict[str, str]:
+    """返回 {space: 期望的 model_name}。"""
+    name = (scheme_name or scheme.ACTIVE_SCHEME).lower()
+    cfg = scheme.SCHEMES.get(name)
+    if not cfg:
+        raise ValueError(f"未知方案: {scheme_name!r}（可选 {sorted(scheme.SCHEMES)}）")
+    return {space: cfg[role] for space, role in SPACE_ROLE.items()}
+
+
+def scope_coverage(db_path: str, scope_id: str, scheme_name: str | None = None) -> dict:
+    """统计某个 scope 里，各 space 期望模型的向量数 vs 实际存在的模型。"""
+    expected = expected_models(scheme_name)
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join("?" for _ in RETRIEVAL_SPACES)
+        cur.execute(
+            f"""SELECT space, model_name, COUNT(*) FROM memory_vectors
+                WHERE scope_id = ? AND space IN ({placeholders})
+                GROUP BY space, model_name""",
+            (scope_id, *RETRIEVAL_SPACES),
+        )
+        actual: dict[str, dict[str, int]] = {}
+        for space, model_name, count in cur.fetchall():
+            actual.setdefault(space, {})[model_name] = count
+    finally:
+        conn.close()
+
+    report = {"scope_id": scope_id, "scheme": scheme_name or scheme.ACTIVE_SCHEME, "spaces": {}}
+    ready = True
+    for space, want in expected.items():
+        counts = actual.get(space) or {}
+        have = counts.get(want, 0)
+        # 有向量、但不是当前方案的模型 → 说明这里还没重建
+        others = {name: n for name, n in counts.items() if name != want}
+        if not counts:
+            # 这个 space 本来就没数据（比如没有 episodic 文本），不算未就绪
+            status = "empty"
+        elif have:
+            status = "ready"
+        else:
+            status = "stale"
+            ready = False
+        report["spaces"][space] = {
+            "expected_model": want,
+            "expected_vectors": have,
+            "other_models": others,
+            "status": status,
+        }
+    report["ready"] = ready
+    return report
+
+
+class ConsistencyError(RuntimeError):
+    """方案与库中向量不匹配。刻意做成异常而不是日志——检索静默返回空比报错难查得多。"""
+
+
+def assert_ready(db_path: str, scope_id: str, scheme_name: str | None = None) -> dict:
+    report = scope_coverage(db_path, scope_id, scheme_name)
+    if not report["ready"]:
+        stale = {s: v for s, v in report["spaces"].items() if v["status"] == "stale"}
+        detail = "; ".join(
+            f"{s}: 期望 {v['expected_model']}，库里只有 {list(v['other_models']) or '无'}"
+            for s, v in stale.items()
+        )
+        raise ConsistencyError(
+            f"scope {scope_id} 的向量不是当前方案（{report['scheme']}）建的：{detail}。"
+            f"请先跑 scripts/maintenance/rebuild_scope_vectors.py --scope {scope_id}"
+        )
+    return report
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--scope", required=True, help="scope_id")
+    parser.add_argument("--scheme", default=None,
+                        help=f"方案名，默认 {scheme.DEFAULT_SCHEME} 的当前生效值 {scheme.ACTIVE_SCHEME}")
+    parser.add_argument("--db", default=os.getenv("SENTRIX_DB_PATH", "data/sentrix.db"))
+    parser.add_argument("--json", action="store_true", help="输出原始 JSON")
+    args = parser.parse_args(argv)
+
+    report = scope_coverage(args.db, args.scope, args.scheme)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["ready"] else 1
+
+    print(f"scope   : {report['scope_id']}")
+    print(f"方案    : {report['scheme']}")
+    print(f"就绪    : {'✅ 是' if report['ready'] else '❌ 否——向量不是这个方案建的'}")
+    print()
+    for space, info in report["spaces"].items():
+        mark = {"ready": "✅", "stale": "❌", "empty": "－"}[info["status"]]
+        print(f"  {mark} {space:<12} 期望 {info['expected_model']}")
+        print(f"      该模型向量数: {info['expected_vectors']}")
+        if info["other_models"]:
+            for name, n in info["other_models"].items():
+                print(f"      库里另有: {name}  {n} 条")
+    return 0 if report["ready"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
